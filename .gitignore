@@ -244,9 +244,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Build output. Placeholder pages are tracked.
-web/dist/*
-!web/dist/index.html
+# Vite build output. The image copies it into the Go embed directory.
+web/dist/
+# Embedded UI. The placeholder page is tracked; production files are built in Docker.
 internal/httpserver/dist/*
 !internal/httpserver/dist/index.html
 
