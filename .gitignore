@@ -243,9 +243,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Build output. Placeholder web/dist/index.html is tracked.
+# Build output. Placeholder pages are tracked.
 web/dist/*
 !web/dist/index.html
+internal/httpserver/dist/*
+!internal/httpserver/dist/index.html
 
 # Secrets and local data
 secrets/

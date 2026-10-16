@@ -40,13 +40,13 @@ Server rejects KDF parameters below the production floor.
 
 Check a box only after tests for that slice pass.
 
-1. [ ] Gitignore entries for Go, Node, Vite, secrets, and local data.
-2. [ ] Schema, sqlc, migrator, config, health endpoints.
-3. [ ] Sessions, OIDC PKCE, MFA `amr` fail-closed, CSRF, security headers.
-4. [ ] Invitations: 32-byte token, SHA-256 at rest, 24h expiry, single use, revoke, issuer+subject match, identical client error.
-5. [ ] Users, roles, service grants, audit log with a secret-field denylist.
-6. [ ] Services, accounts, subscriptions, payment methods (nickname, issuer, last4, expiry only), payments, dashboard, 7/3/1 renewal alerts.
-7. [ ] CSV and SpreadsheetML export. JSON import of the documented non-secret shape.
+1. [x] Gitignore entries for Go, Node, Vite, secrets, and local data.
+2. [x] Schema, sqlc, migrator, config, health endpoints.
+3. [x] Sessions, OIDC PKCE, MFA `amr` fail-closed, CSRF, security headers.
+4. [x] Invitations: 32-byte token, SHA-256 at rest, 24h expiry, single use, revoke, issuer+subject match, identical client error.
+5. [x] Users, roles, service grants, audit log with a secret-field denylist.
+6. [x] Services, accounts, subscriptions, payment methods (nickname, issuer, last4, expiry only), payments, dashboard, 7/3/1 renewal alerts.
+7. [x] CSV and SpreadsheetML export. JSON import of the documented non-secret shape.
 8. [ ] Crypto document, then identity enrollment, fingerprint approval, vaults, envelopes, items, rotation, offboarding flags, 2-custodian recovery.
 9. [ ] React UI for those flows. Unlock and encrypt in the browser.
 10. [ ] Dockerfile, Compose, `.env.example`, GitHub Actions, README, threat model, recovery runbook.
