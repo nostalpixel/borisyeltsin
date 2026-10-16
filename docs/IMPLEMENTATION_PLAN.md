@@ -8,7 +8,7 @@ A clean `docker compose up -d` runs Postgres and one container. That container s
 
 ## Stack lock
 
-- Web: React, TypeScript, Vite, Tailwind. Client crypto: `libsodium-wrappers` only.
+- Web: React, TypeScript, Vite, Tailwind. Client crypto: `libsodium-wrappers-sumo` only. The non-sumo npm build omits `crypto_pwhash`.
 - API: Go, chi, pgx, sqlc. One process serves API, embedded UI, and the renewal scheduler.
 - Data: PostgreSQL. Migrations in `db/migrations`. Queries in `db/queries`. Generated code in `internal/db`.
 - Identity: external Authentik. Authorization Code + PKCE. Server session cookie. No local passwords.
@@ -24,7 +24,7 @@ Established libsodium constructions. No new cipher, KDF, or key exchange.
 | Passphrase KEK | `crypto_pwhash` Argon2id, opslimit 3, memlimit 64 MiB, 16-byte salt, 32-byte output |
 | Private-key backup | `crypto_secretbox_easy` under the KEK |
 | Recovery backup | second `crypto_secretbox_easy` under a 32-byte random recovery key shown once |
-| Vault payload | `crypto_aead_xchacha20poly1305_ietf` with AAD `v1\|vault\|item\|key_version` |
+| Vault payload | `crypto_aead_xchacha20poly1305_ietf` with AAD `v1\|<vault_id>\|<item_id>\|<key_version>` |
 | Member envelope | `crypto_box_seal` of `{v, vault_id, key_version, key}` |
 | Org recovery | 2-of-2 XOR split of a 32-byte recovery key. Each share is `crypto_box_seal`ed to one custodian. Vault keys are `secretbox`ed under the combined key |
 
@@ -47,9 +47,9 @@ Check a box only after tests for that slice pass.
 5. [x] Users, roles, service grants, audit log with a secret-field denylist.
 6. [x] Services, accounts, subscriptions, payment methods (nickname, issuer, last4, expiry only), payments, dashboard, 7/3/1 renewal alerts.
 7. [x] CSV and SpreadsheetML export. JSON import of the documented non-secret shape.
-8. [ ] Crypto document, then identity enrollment, fingerprint approval, vaults, envelopes, items, rotation, offboarding flags, 2-custodian recovery.
+8. [x] Crypto document, then identity enrollment, fingerprint approval, vaults, envelopes, items, rotation, offboarding flags, 2-custodian recovery.
 9. [x] React UI for those flows. Unlock and encrypt in the browser.
-10. [ ] Dockerfile, Compose, `.env.example`, GitHub Actions, README, threat model, recovery runbook.
+10. [x] Dockerfile, Compose, `.env.example`, GitHub Actions, README, threat model, recovery runbook.
 
 ## Request rules
 

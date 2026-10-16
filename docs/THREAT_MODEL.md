@@ -1,0 +1,55 @@
+# Threat model
+
+This is the boundary of the vault, not a claim that the whole application is zero-knowledge. Subscription names, prices, dates, categories, membership, and audit rows are ordinary database fields. A person who can read Postgres can read them.
+
+## Assets
+
+- Account passwords and other vault payloads.
+- Identity private keys and the passphrase that wraps them.
+- Vault keys and the organization recovery key.
+- Personal recovery keys and custodian shares.
+- Session cookies.
+- Subscription and payment metadata. Payment methods store a nickname, issuer, last4, and expiry. They do not store a full card number.
+
+## Mitigations that exist in this repository
+
+| Threat | What the code does |
+|---|---|
+| Stolen PostgreSQL backup | Vault payloads, private keys, and recovery shares are ciphertext. The backup still contains subscription metadata and public keys. |
+| Compromised API process | The process has no vault key and no passphrase. It can serve malicious JavaScript. See the boundary below. |
+| Malicious application admin | The admin role edits service metadata. It does not mint envelopes. Vault keys move only through client-side seals to approved public keys. |
+| Stolen Authentik password | Login requires an `amr` value in the allow-list (`mfa`, `otp`, `totp`, `webauthn` by default). A session without that claim is rejected on every request. The vault passphrase is separate. |
+| Stolen unlocked device | The private key is in page memory after unlock. Logout zeroes that buffer. A thief who copies the ciphertext still needs the passphrase or the personal recovery key. |
+| Public-key substitution | A different active admin must approve a key. The sole bootstrap user may approve only their own key, and only while they are the only user. The client refuses to open an identity whose fingerprint does not match the approved public key. |
+| Invitation interception | 32-byte token, SHA-256 at rest, 24-hour expiry, single use, bound to the OIDC issuer and subject. The client error is the same for a bad token and a failed login. |
+| XSS | CSP is `default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'`. `style-src-attr` exists so logo colors can be set on elements. Inline scripts and inline stylesheets stay blocked. |
+| CSRF | Session cookie is HttpOnly, SameSite=Lax, and Secure unless `COOKIE_SECURE=false`. Mutating `/api/v1` calls need `X-Requested-With: fetch` and, once a session exists, `X-CSRF-Token`. |
+| IDOR | Queries are scoped by the session organization. Missing and forbidden objects both return 404. |
+| Offline passphrase guessing | Argon2id at opslimit 3 and 64 MiB. A weak passphrase still falls quickly. The server rate-limits login and enrollment per process. It cannot rate-limit an offline attack on a stolen backup. |
+| Revoked member | Revocation drops sessions, memberships, and envelopes, and marks the vault for rotation. Secrets that person already copied are outside this system. |
+| Lost keys | Personal recovery key, or both organization shares together. See `RECOVERY.md`. |
+
+## Boundaries
+
+The application does not protect against:
+
+- Malware on an unlocked device, or a person looking at an unlocked screen.
+- Malicious JavaScript delivered by a compromised application server or a compromised build of this repository. Browser encryption cannot detect that the page itself was replaced.
+- Credentials a former member already copied.
+- Full compromise of Authentik together with the vault passphrase, the personal recovery key, or both organization shares.
+- The two recovery custodians acting together. That is the recovery procedure, not an unexpected break.
+- A database administrator editing or deleting ordinary audit rows. The audit log is not an append-only transparency log.
+
+The server also cannot prove that a browser displayed, copied, or did not copy a decrypted password. Audit rows record API actions such as item writes. They do not record a view that stayed inside the browser.
+
+Lost passphrase recovery is the personal recovery key. An Authentik password reset is not that key.
+
+If the passphrase, the personal recovery key, and both organization shares are all gone, the vault ciphertext in Postgres cannot be decrypted. There is no operator override.
+
+## Deployment assumptions
+
+TLS is terminated by a reverse proxy in front of this process. Compose publishes the application port and does not publish Postgres. The database URL inside Compose uses `sslmode=disable` on the Docker network. Do not put that URL on a public network.
+
+`TRUST_PROXY` defaults to false. Turn it on only when a proxy you control sets `X-Forwarded-For`. It affects the rate-limit key, not authorization.
+
+`COOKIE_SECURE` defaults to true in the process and to false in the Compose example so a local HTTP port works. A deployment behind HTTPS must set `COOKIE_SECURE=true`.
