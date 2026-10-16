@@ -1,6 +1,6 @@
 # Cryptographic design
 
-BorisEltsyn uses libsodium constructions only. This document records the choices that are already in the client and the server checks around them. It is not a new protocol.
+BorisYeltsin uses libsodium constructions only. This document records the choices that are already in the client and the server checks around them. It is not a new protocol.
 
 Do not put real organizational credentials in the vault until someone other than the implementer has reviewed this design.
 

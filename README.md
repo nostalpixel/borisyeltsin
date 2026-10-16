@@ -1,6 +1,6 @@
-![BorisEltsyn](docs/main_banner.png)
+![BorisYeltsin](docs/main_banner.png)
 
-# BorisEltsyn
+# BorisYeltsin
 
 Subscription ledger and team credential vault for a small organization. One Go process serves the API, the renewal scheduler, and the compiled React application. Postgres stores the ledger in the clear and the vault as ciphertext. People sign in with an external Authentik. There is no local password and no public registration.
 

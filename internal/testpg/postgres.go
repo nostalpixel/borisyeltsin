@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nostalpixel/boriseltsyn/internal/migrate"
+	"github.com/nostalpixel/borisyeltsin/internal/migrate"
 )
 
 var (

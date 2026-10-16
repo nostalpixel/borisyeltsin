@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nostalpixel/boriseltsyn/internal/db"
-	"github.com/nostalpixel/boriseltsyn/internal/testpg"
+	"github.com/nostalpixel/borisyeltsin/internal/db"
+	"github.com/nostalpixel/borisyeltsin/internal/testpg"
 )
 
 func TestMain(m *testing.M) {

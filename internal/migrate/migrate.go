@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nostalpixel/boriseltsyn/db"
+	"github.com/nostalpixel/borisyeltsin/db"
 )
 
 // Up applies any migration file that is not recorded in schema_migrations.

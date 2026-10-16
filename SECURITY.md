@@ -1,6 +1,6 @@
 # Security
 
-BorisEltsyn encrypts vault payloads in the browser. It does not encrypt the subscription ledger. Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) before storing real credentials, and [docs/CRYPTO.md](docs/CRYPTO.md) for the constructions.
+BorisYeltsin encrypts vault payloads in the browser. It does not encrypt the subscription ledger. Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) before storing real credentials, and [docs/CRYPTO.md](docs/CRYPTO.md) for the constructions.
 
 ## Report a problem
 

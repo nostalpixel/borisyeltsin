@@ -8,11 +8,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/nostalpixel/boriseltsyn/internal/authz"
-	"github.com/nostalpixel/boriseltsyn/internal/db"
-	"github.com/nostalpixel/boriseltsyn/internal/fieldsafe"
-	"github.com/nostalpixel/boriseltsyn/internal/importer"
-	"github.com/nostalpixel/boriseltsyn/internal/spend"
+	"github.com/nostalpixel/borisyeltsin/internal/authz"
+	"github.com/nostalpixel/borisyeltsin/internal/db"
+	"github.com/nostalpixel/borisyeltsin/internal/fieldsafe"
+	"github.com/nostalpixel/borisyeltsin/internal/importer"
+	"github.com/nostalpixel/borisyeltsin/internal/spend"
 )
 
 func (s *Server) grants(ctx context.Context, org uuid.UUID) (map[uuid.UUID]map[uuid.UUID]bool, error) {

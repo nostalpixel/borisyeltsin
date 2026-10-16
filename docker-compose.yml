@@ -1,4 +1,4 @@
-# BorisEltsyn and Postgres. Authentik stays outside this file.
+# BorisYeltsin and Postgres. Authentik stays outside this file.
 # TLS terminates at an existing reverse proxy. Do not publish the database port.
 
 services:
