@@ -40,13 +40,22 @@ func main() {
 		slog.Error("migrate", "error", err)
 		os.Exit(1)
 	}
-	token, created, err := httpserver.Bootstrap(ctx, db.New(pool), cfg)
-	if err != nil {
+	if len(os.Args) > 1 && os.Args[1] == "bootstrap-invite" {
+		// The token goes to this terminal only, never to the server log.
+		token, err := httpserver.Bootstrap(ctx, pool, cfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "bootstrap-invite:", err)
+			os.Exit(1)
+		}
+		fmt.Println("BOOTSTRAP_INVITE_TOKEN=" + token)
+		fmt.Fprintln(os.Stderr, "Valid for 24 hours, once. Running this again revokes it.")
+		return
+	}
+	if pending, err := httpserver.BootstrapPending(ctx, db.New(pool), cfg); err != nil {
 		slog.Error("bootstrap", "error", err)
 		os.Exit(1)
-	}
-	if created {
-		fmt.Println("BOOTSTRAP_INVITE_TOKEN=" + token)
+	} else if pending {
+		slog.Info("no users yet; create the first admin invite with: docker compose exec boriseltsyn boriseltsyn bootstrap-invite")
 	}
 	server := httpserver.New(pool, cfg)
 	if err := server.UseOIDC(ctx); err != nil {

@@ -312,7 +312,12 @@ func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	var body serviceBody
+	// Start from the stored row so fields the client omits keep their values.
+	body := serviceBody{
+		Name: current.Name, Category: current.Category, URL: current.Url, Description: current.Description,
+		Unclear: current.Unclear, Logo: current.Logo, LogoBg: current.LogoBg, LogoFg: current.LogoFg,
+		Notes: current.Notes, Tags: current.Tags,
+	}
 	if !s.decode(w, r, &body) {
 		return
 	}
@@ -431,7 +436,7 @@ type accountBody struct {
 func cleanAccount(body accountBody) (accountBody, error) {
 	body.Label = clip(body.Label, 80)
 	if body.Label == "" {
-		body.Label = "Аккаунт"
+		body.Label = "Account"
 	}
 	body.LoginHint = clip(body.LoginHint, 500)
 	body.CardLabel = clip(body.CardLabel, 80)
@@ -689,6 +694,10 @@ func (s *Server) linkVaultItem(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
+	if _, err := s.Q.GetVaultItem(r.Context(), db.GetVaultItemParams{ID: body.VaultItemID, VaultID: body.VaultID}); err != nil {
+		s.fail(w, http.StatusBadRequest, "bad_vault_item")
+		return
+	}
 	if err := s.Q.LinkAccountVaultItem(r.Context(), db.LinkAccountVaultItemParams{
 		ID: accountID, OrganizationID: p.OrgID, VaultID: &body.VaultID, VaultItemID: &body.VaultItemID,
 	}); err != nil {
@@ -732,6 +741,13 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		}
 		s.sendError(w, err)
 		return
+	}
+	if body.AccountID != nil {
+		account, err := s.Q.GetAccount(r.Context(), db.GetAccountParams{ID: *body.AccountID, OrganizationID: p.OrgID})
+		if err != nil || account.ServiceID != body.ServiceID {
+			s.fail(w, http.StatusBadRequest, "bad_account")
+			return
+		}
 	}
 	params.ServiceID = body.ServiceID
 	params.AccountID = body.AccountID

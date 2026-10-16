@@ -113,7 +113,7 @@ func (q *Queries) ArchiveService(ctx context.Context, arg ArchiveServiceParams) 
 const bumpVaultKeyVersion = `-- name: BumpVaultKeyVersion :one
 UPDATE vaults SET key_version = key_version + 1, rotation_required = false
 WHERE id = $1 AND key_version = $2
-RETURNING id, organization_id, name, description, key_version, rotation_required, created_at, archived_at
+RETURNING id, organization_id, name, description, key_version, rotation_required, created_at, archived_at, initialized
 `
 
 type BumpVaultKeyVersionParams struct {
@@ -133,6 +133,7 @@ func (q *Queries) BumpVaultKeyVersion(ctx context.Context, arg BumpVaultKeyVersi
 		&i.RotationRequired,
 		&i.CreatedAt,
 		&i.ArchivedAt,
+		&i.Initialized,
 	)
 	return i, err
 }
@@ -359,13 +360,13 @@ func (q *Queries) CreateService(ctx context.Context, arg CreateServiceParams) (S
 }
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO sessions (id, user_id, csrf_secret, amr, expires_at)
+INSERT INTO sessions (token_hash, user_id, csrf_secret, amr, expires_at)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, user_id, csrf_secret, amr, expires_at, revoked_at, created_at
+RETURNING id, user_id, csrf_secret, amr, expires_at, revoked_at, created_at, token_hash
 `
 
 type CreateSessionParams struct {
-	ID         uuid.UUID `json:"id"`
+	TokenHash  []byte    `json:"token_hash"`
 	UserID     uuid.UUID `json:"user_id"`
 	CsrfSecret string    `json:"csrf_secret"`
 	Amr        []string  `json:"amr"`
@@ -374,7 +375,7 @@ type CreateSessionParams struct {
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
 	row := q.db.QueryRow(ctx, createSession,
-		arg.ID,
+		arg.TokenHash,
 		arg.UserID,
 		arg.CsrfSecret,
 		arg.Amr,
@@ -389,6 +390,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.ExpiresAt,
 		&i.RevokedAt,
 		&i.CreatedAt,
+		&i.TokenHash,
 	)
 	return i, err
 }
@@ -491,7 +493,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 const createVault = `-- name: CreateVault :one
 INSERT INTO vaults (organization_id, name, description)
 VALUES ($1, $2, $3)
-RETURNING id, organization_id, name, description, key_version, rotation_required, created_at, archived_at
+RETURNING id, organization_id, name, description, key_version, rotation_required, created_at, archived_at, initialized
 `
 
 type CreateVaultParams struct {
@@ -512,6 +514,7 @@ func (q *Queries) CreateVault(ctx context.Context, arg CreateVaultParams) (Vault
 		&i.RotationRequired,
 		&i.CreatedAt,
 		&i.ArchivedAt,
+		&i.Initialized,
 	)
 	return i, err
 }
@@ -752,7 +755,7 @@ SELECT s.id, s.user_id, s.csrf_secret, s.amr, s.expires_at,
        u.organization_id, u.email, u.display_name, u.role, u.status, u.issuer, u.subject
 FROM sessions s
 JOIN users u ON u.id = s.user_id
-WHERE s.id = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.status <> 'revoked'
+WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.status <> 'revoked'
 `
 
 type GetActiveSessionRow struct {
@@ -770,8 +773,8 @@ type GetActiveSessionRow struct {
 	Subject        string    `json:"subject"`
 }
 
-func (q *Queries) GetActiveSession(ctx context.Context, id uuid.UUID) (GetActiveSessionRow, error) {
-	row := q.db.QueryRow(ctx, getActiveSession, id)
+func (q *Queries) GetActiveSession(ctx context.Context, tokenHash []byte) (GetActiveSessionRow, error) {
+	row := q.db.QueryRow(ctx, getActiveSession, tokenHash)
 	var i GetActiveSessionRow
 	err := row.Scan(
 		&i.ID,
@@ -1073,7 +1076,7 @@ func (q *Queries) GetUserByIdentity(ctx context.Context, arg GetUserByIdentityPa
 }
 
 const getVault = `-- name: GetVault :one
-SELECT id, organization_id, name, description, key_version, rotation_required, created_at, archived_at FROM vaults WHERE id = $1 AND organization_id = $2
+SELECT id, organization_id, name, description, key_version, rotation_required, created_at, archived_at, initialized FROM vaults WHERE id = $1 AND organization_id = $2
 `
 
 type GetVaultParams struct {
@@ -1093,6 +1096,35 @@ func (q *Queries) GetVault(ctx context.Context, arg GetVaultParams) (Vault, erro
 		&i.RotationRequired,
 		&i.CreatedAt,
 		&i.ArchivedAt,
+		&i.Initialized,
+	)
+	return i, err
+}
+
+const getVaultItem = `-- name: GetVaultItem :one
+SELECT id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at, version FROM vault_items WHERE id = $1 AND vault_id = $2 AND deleted_at IS NULL
+`
+
+type GetVaultItemParams struct {
+	ID      uuid.UUID `json:"id"`
+	VaultID uuid.UUID `json:"vault_id"`
+}
+
+func (q *Queries) GetVaultItem(ctx context.Context, arg GetVaultItemParams) (VaultItem, error) {
+	row := q.db.QueryRow(ctx, getVaultItem, arg.ID, arg.VaultID)
+	var i VaultItem
+	err := row.Scan(
+		&i.ID,
+		&i.VaultID,
+		&i.KeyVersion,
+		&i.Nonce,
+		&i.Ciphertext,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.Version,
 	)
 	return i, err
 }
@@ -1392,7 +1424,7 @@ func (q *Queries) InsertRenewalAlert(ctx context.Context, arg InsertRenewalAlert
 const insertVaultItem = `-- name: InsertVaultItem :one
 INSERT INTO vault_items (id, vault_id, key_version, nonce, ciphertext, created_by, updated_by)
 VALUES ($1, $2, $3, $4, $5, $6, $6)
-RETURNING id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at, version
 `
 
 type InsertVaultItemParams struct {
@@ -1425,6 +1457,7 @@ func (q *Queries) InsertVaultItem(ctx context.Context, arg InsertVaultItemParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Version,
 	)
 	return i, err
 }
@@ -2043,7 +2076,7 @@ func (q *Queries) ListVaultIDsForUser(ctx context.Context, userID uuid.UUID) ([]
 }
 
 const listVaultItems = `-- name: ListVaultItems :many
-SELECT id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at FROM vault_items WHERE vault_id = $1 AND deleted_at IS NULL ORDER BY created_at
+SELECT id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at, version FROM vault_items WHERE vault_id = $1 AND deleted_at IS NULL ORDER BY created_at
 `
 
 func (q *Queries) ListVaultItems(ctx context.Context, vaultID uuid.UUID) ([]VaultItem, error) {
@@ -2066,6 +2099,7 @@ func (q *Queries) ListVaultItems(ctx context.Context, vaultID uuid.UUID) ([]Vaul
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -2120,7 +2154,7 @@ func (q *Queries) ListVaultMembers(ctx context.Context, vaultID uuid.UUID) ([]Li
 }
 
 const listVaults = `-- name: ListVaults :many
-SELECT id, organization_id, name, description, key_version, rotation_required, created_at, archived_at FROM vaults WHERE organization_id = $1 AND archived_at IS NULL ORDER BY name
+SELECT id, organization_id, name, description, key_version, rotation_required, created_at, archived_at, initialized FROM vaults WHERE organization_id = $1 AND archived_at IS NULL ORDER BY name
 `
 
 func (q *Queries) ListVaults(ctx context.Context, organizationID uuid.UUID) ([]Vault, error) {
@@ -2141,6 +2175,7 @@ func (q *Queries) ListVaults(ctx context.Context, organizationID uuid.UUID) ([]V
 			&i.RotationRequired,
 			&i.CreatedAt,
 			&i.ArchivedAt,
+			&i.Initialized,
 		); err != nil {
 			return nil, err
 		}
@@ -2150,6 +2185,50 @@ func (q *Queries) ListVaults(ctx context.Context, organizationID uuid.UUID) ([]V
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockBootstrap = `-- name: LockBootstrap :exec
+SELECT pg_advisory_xact_lock(hashtext('borisyeltsin.bootstrap'))
+`
+
+func (q *Queries) LockBootstrap(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockBootstrap)
+	return err
+}
+
+const lockVault = `-- name: LockVault :one
+SELECT id, organization_id, name, description, key_version, rotation_required, created_at, archived_at, initialized FROM vaults WHERE id = $1 AND organization_id = $2 FOR UPDATE
+`
+
+type LockVaultParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+}
+
+func (q *Queries) LockVault(ctx context.Context, arg LockVaultParams) (Vault, error) {
+	row := q.db.QueryRow(ctx, lockVault, arg.ID, arg.OrganizationID)
+	var i Vault
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.Name,
+		&i.Description,
+		&i.KeyVersion,
+		&i.RotationRequired,
+		&i.CreatedAt,
+		&i.ArchivedAt,
+		&i.Initialized,
+	)
+	return i, err
+}
+
+const markVaultInitialized = `-- name: MarkVaultInitialized :exec
+UPDATE vaults SET initialized = true WHERE id = $1
+`
+
+func (q *Queries) MarkVaultInitialized(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markVaultInitialized, id)
+	return err
 }
 
 const rejectCryptoIdentity = `-- name: RejectCryptoIdentity :one
@@ -2317,6 +2396,16 @@ func (q *Queries) RevokeInvitation(ctx context.Context, arg RevokeInvitationPara
 	return i, err
 }
 
+const revokeOpenInvitations = `-- name: RevokeOpenInvitations :exec
+UPDATE invitations SET revoked_at = now()
+WHERE organization_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL
+`
+
+func (q *Queries) RevokeOpenInvitations(ctx context.Context, organizationID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, revokeOpenInvitations, organizationID)
+	return err
+}
+
 const revokeSession = `-- name: RevokeSession :exec
 UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 `
@@ -2333,6 +2422,52 @@ UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
 func (q *Queries) RevokeSessionsForUser(ctx context.Context, userID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, revokeSessionsForUser, userID)
 	return err
+}
+
+const rotateVaultItem = `-- name: RotateVaultItem :one
+UPDATE vault_items
+SET key_version = $1, nonce = $2, ciphertext = $3,
+    updated_by = $4, updated_at = now(), version = version + 1
+WHERE id = $5 AND vault_id = $6 AND deleted_at IS NULL
+  AND version = $7
+RETURNING id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at, version
+`
+
+type RotateVaultItemParams struct {
+	KeyVersion      int32     `json:"key_version"`
+	Nonce           []byte    `json:"nonce"`
+	Ciphertext      []byte    `json:"ciphertext"`
+	UpdatedBy       uuid.UUID `json:"updated_by"`
+	ID              uuid.UUID `json:"id"`
+	VaultID         uuid.UUID `json:"vault_id"`
+	ExpectedVersion int32     `json:"expected_version"`
+}
+
+func (q *Queries) RotateVaultItem(ctx context.Context, arg RotateVaultItemParams) (VaultItem, error) {
+	row := q.db.QueryRow(ctx, rotateVaultItem,
+		arg.KeyVersion,
+		arg.Nonce,
+		arg.Ciphertext,
+		arg.UpdatedBy,
+		arg.ID,
+		arg.VaultID,
+		arg.ExpectedVersion,
+	)
+	var i VaultItem
+	err := row.Scan(
+		&i.ID,
+		&i.VaultID,
+		&i.KeyVersion,
+		&i.Nonce,
+		&i.Ciphertext,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.Version,
+	)
+	return i, err
 }
 
 const setRecoveryReady = `-- name: SetRecoveryReady :exec
@@ -2618,28 +2753,32 @@ func (q *Queries) UpdateUserStatus(ctx context.Context, arg UpdateUserStatusPara
 
 const updateVaultItem = `-- name: UpdateVaultItem :one
 UPDATE vault_items
-SET nonce = $3, ciphertext = $4, key_version = $5, updated_by = $6, updated_at = now()
-WHERE id = $1 AND vault_id = $2 AND deleted_at IS NULL
-RETURNING id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at
+SET nonce = $1, ciphertext = $2, key_version = $3,
+    updated_by = $4, updated_at = now(), version = version + 1
+WHERE id = $5 AND vault_id = $6 AND deleted_at IS NULL
+  AND version = $7
+RETURNING id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at, version
 `
 
 type UpdateVaultItemParams struct {
-	ID         uuid.UUID `json:"id"`
-	VaultID    uuid.UUID `json:"vault_id"`
-	Nonce      []byte    `json:"nonce"`
-	Ciphertext []byte    `json:"ciphertext"`
-	KeyVersion int32     `json:"key_version"`
-	UpdatedBy  uuid.UUID `json:"updated_by"`
+	Nonce           []byte    `json:"nonce"`
+	Ciphertext      []byte    `json:"ciphertext"`
+	KeyVersion      int32     `json:"key_version"`
+	UpdatedBy       uuid.UUID `json:"updated_by"`
+	ID              uuid.UUID `json:"id"`
+	VaultID         uuid.UUID `json:"vault_id"`
+	ExpectedVersion int32     `json:"expected_version"`
 }
 
 func (q *Queries) UpdateVaultItem(ctx context.Context, arg UpdateVaultItemParams) (VaultItem, error) {
 	row := q.db.QueryRow(ctx, updateVaultItem,
-		arg.ID,
-		arg.VaultID,
 		arg.Nonce,
 		arg.Ciphertext,
 		arg.KeyVersion,
 		arg.UpdatedBy,
+		arg.ID,
+		arg.VaultID,
+		arg.ExpectedVersion,
 	)
 	var i VaultItem
 	err := row.Scan(
@@ -2653,6 +2792,7 @@ func (q *Queries) UpdateVaultItem(ctx context.Context, arg UpdateVaultItemParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Version,
 	)
 	return i, err
 }
@@ -2775,54 +2915,6 @@ func (q *Queries) UpsertRecoveryEnvelope(ctx context.Context, arg UpsertRecovery
 		arg.Ciphertext,
 	)
 	return err
-}
-
-const upsertVaultItem = `-- name: UpsertVaultItem :one
-INSERT INTO vault_items (id, vault_id, key_version, nonce, ciphertext, created_by, updated_by)
-VALUES ($1, $2, $3, $4, $5, $6, $6)
-ON CONFLICT (id) DO UPDATE SET
-    key_version = EXCLUDED.key_version,
-    nonce = EXCLUDED.nonce,
-    ciphertext = EXCLUDED.ciphertext,
-    updated_by = EXCLUDED.updated_by,
-    updated_at = now(),
-    deleted_at = NULL
-WHERE vault_items.vault_id = EXCLUDED.vault_id
-RETURNING id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at
-`
-
-type UpsertVaultItemParams struct {
-	ID         uuid.UUID `json:"id"`
-	VaultID    uuid.UUID `json:"vault_id"`
-	KeyVersion int32     `json:"key_version"`
-	Nonce      []byte    `json:"nonce"`
-	Ciphertext []byte    `json:"ciphertext"`
-	CreatedBy  uuid.UUID `json:"created_by"`
-}
-
-func (q *Queries) UpsertVaultItem(ctx context.Context, arg UpsertVaultItemParams) (VaultItem, error) {
-	row := q.db.QueryRow(ctx, upsertVaultItem,
-		arg.ID,
-		arg.VaultID,
-		arg.KeyVersion,
-		arg.Nonce,
-		arg.Ciphertext,
-		arg.CreatedBy,
-	)
-	var i VaultItem
-	err := row.Scan(
-		&i.ID,
-		&i.VaultID,
-		&i.KeyVersion,
-		&i.Nonce,
-		&i.Ciphertext,
-		&i.CreatedBy,
-		&i.UpdatedBy,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeletedAt,
-	)
-	return i, err
 }
 
 const upsertVaultMember = `-- name: UpsertVaultMember :exec

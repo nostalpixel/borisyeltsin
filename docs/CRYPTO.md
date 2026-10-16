@@ -89,9 +89,9 @@ Not stored and not accepted in import bodies: passphrases, private keys, recover
 1. The browser generates the X25519 key pair after invite and MFA.
 2. It posts the public key and the two secretboxes. Status becomes `pending_approval`.
 3. The sole user may approve their own key while they are the only user. Every later key needs a different active admin. The admin role does not grant vault keys.
-4. The owner creates a vault and seals the vault key to themself.
+4. The owner creates a vault and seals the vault key to themself. That first envelope is accepted once; afterwards the vault is `initialized` and a missing envelope means "not shared with you", never "new vault".
 5. Two custodians enroll. The owner posts the recovery envelope. Item writes open.
-6. A replacement public key is a proposal. An admin approves it. Envelopes whose fingerprint does not match the new key are deleted, and the vault is marked `rotation_required`. The old private key still opens the remaining envelopes until rotation.
+6. A replacement public key is a proposal. An admin approves it. Envelopes whose fingerprint does not match the new key are deleted, and the vault is marked `rotation_required`. The person then holds no envelope until a key holder shares the current key to the new public key, or rotates.
 7. Revocation deletes memberships and envelopes, revokes sessions, and sets `rotation_required`.
 
 Public-key replacement does not decrypt anything. Recovery does not skip the fingerprint check: unlock compares the opened public key with the approved fingerprint and wipes the private key on mismatch.
@@ -101,3 +101,13 @@ Public-key replacement does not decrypt anything. Recovery does not skip the fin
 `web/src/crypto/vault.test.ts` covers the KDF floor, one production Argon2id stretch, secretbox round-trip, recovery-key secretbox, sealed vault-key mismatch, item additional data, and the XOR split with sealed shares.
 
 Go tests cover authorization, invitation single-use, secret rejection, envelope rotation that keeps the account link, and revocation. They do not reimplement the ciphers.
+
+## Server-side write rules
+
+The server cannot see the vault key, so it enforces who may write and against which state. Every key-affecting write takes the vault row lock (`SELECT ... FOR UPDATE`, 5-second `lock_timeout`, 503 `vault_busy` on timeout) and checks inside the same transaction:
+
+- Member changes, key sharing, recovery envelopes and rotation need a vault owner who holds an envelope for the current key version. The admin role gets no exception.
+- Item and envelope writes carry `expected_key_version`. A write prepared under an older key is refused with 409 `stale_key`, so no row ends up labelled with a key version it was not encrypted under.
+- Item edits carry the item `version` they read. A stale edit is refused with 409 `item_conflict`.
+- Rotation must list exactly the live items with their versions (409 `items_changed` or `item_conflict` otherwise), one envelope per member to an approved fingerprint, and a 48-byte recovery secretbox.
+- A vault always keeps an owner: removing, demoting or revoking its last owner is refused with 409 `last_vault_owner`.

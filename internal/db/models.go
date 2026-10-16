@@ -183,6 +183,7 @@ type Session struct {
 	ExpiresAt  time.Time          `json:"expires_at"`
 	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
 	CreatedAt  time.Time          `json:"created_at"`
+	TokenHash  []byte             `json:"token_hash"`
 }
 
 type Subscription struct {
@@ -223,6 +224,7 @@ type Vault struct {
 	RotationRequired bool               `json:"rotation_required"`
 	CreatedAt        time.Time          `json:"created_at"`
 	ArchivedAt       pgtype.Timestamptz `json:"archived_at"`
+	Initialized      bool               `json:"initialized"`
 }
 
 type VaultItem struct {
@@ -236,6 +238,7 @@ type VaultItem struct {
 	CreatedAt  time.Time          `json:"created_at"`
 	UpdatedAt  time.Time          `json:"updated_at"`
 	DeletedAt  pgtype.Timestamptz `json:"deleted_at"`
+	Version    int32              `json:"version"`
 }
 
 type VaultKeyEnvelope struct {

@@ -71,6 +71,7 @@ export type VaultInfo = {
   key_version: number;
   rotation_required: boolean;
   role: string;
+  initialized: boolean;
 };
 
 export const categories: [string, string, string][] = [

@@ -19,6 +19,8 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Go tests
+        env:
+          TESTPG_REQUIRED: "1"
         run: |
           go mod verify
           go test ./...

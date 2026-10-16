@@ -62,6 +62,7 @@ export function App() {
     const fresh = await reloadWorkspace();
     if (!open || secrets.length === 0) return;
     const used = new Set<string>();
+    const versions = { ...open.versions };
     for (const hit of secrets) {
       const service = fresh.services.find((item) => item.name === hit.service);
       const account = fresh.accounts.find((item) => {
@@ -73,8 +74,10 @@ export function App() {
       }
       used.add(account.id);
       const { savePassword: storePassword } = await import("./crypto/session");
-      const itemId = await storePassword(open.vault, open.vaultKey, account.id, account.vault_item_id, hit.password);
-      account.vault_item_id = itemId;
+      const itemVersion = account.vault_item_id ? versions[account.vault_item_id] : undefined;
+      const saved = await storePassword(open.vault, open.vaultKey, account.id, account.vault_item_id, hit.password, itemVersion);
+      versions[saved.id] = saved.version;
+      account.vault_item_id = saved.id;
       account.vault_id = open.vault.id;
     }
     const passwords = { ...open.passwords };
@@ -85,7 +88,7 @@ export function App() {
       });
       if (hit && account.vault_item_id) passwords[account.vault_item_id] = hit.password;
     }
-    setOpen({ ...open, passwords });
+    setOpen({ ...open, passwords, versions });
     setData(fresh);
   }
 
@@ -94,8 +97,13 @@ export function App() {
       throw new Error("recovery_not_ready");
     }
     const { savePassword: storePassword } = await import("./crypto/session");
-    const itemId = await storePassword(open.vault, open.vaultKey, account.id, account.vault_item_id, password);
-    setOpen({ ...open, passwords: { ...open.passwords, [itemId]: password } });
+    const itemVersion = account.vault_item_id ? open.versions[account.vault_item_id] : undefined;
+    const saved = await storePassword(open.vault, open.vaultKey, account.id, account.vault_item_id, password, itemVersion);
+    setOpen({
+      ...open,
+      passwords: { ...open.passwords, [saved.id]: password },
+      versions: { ...open.versions, [saved.id]: saved.version },
+    });
   }
 
   if (!ready) {

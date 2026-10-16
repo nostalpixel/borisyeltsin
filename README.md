@@ -18,7 +18,7 @@ docker compose up -d
 
 `/healthz` reports that the process is listening. `/readyz` pings Postgres. The image health check uses `/readyz`.
 
-The database URL inside Compose uses `sslmode=disable` on the Docker network. Put TLS on the reverse proxy in front of port 8080. Set `COOKIE_SECURE=true` there. Leave `TRUST_PROXY` false unless that proxy sets `X-Forwarded-For` and you want it used as the rate-limit key.
+The database URL inside Compose uses `sslmode=disable` on the Docker network. Put TLS on the reverse proxy in front of port 8080. `COOKIE_SECURE` defaults to `true`, so the session cookie only travels over HTTPS. Set it to `false` only to try the app over plain `http://localhost`. Leave `TRUST_PROXY` false unless that proxy sets `X-Forwarded-For` and you want it used as the rate-limit key.
 
 `BORISELTSYN_VERSION` tags the image. The default tag is `boriseltsyn:dev`.
 
@@ -39,7 +39,13 @@ While the database has zero users, set all four bootstrap variables:
 - `BOOTSTRAP_OIDC_SUBJECT` (the Authentik subject)
 - `BOOTSTRAP_EMAIL`
 
-Startup prints `BOOTSTRAP_INVITE_TOKEN=` once. The database stores only a SHA-256 of that token. A restart before anyone accepts prints a new token, because the old plaintext is gone. The token lasts 24 hours and works once.
+Then create the invite from the running container:
+
+```bash
+docker compose exec boriseltsyn boriseltsyn bootstrap-invite
+```
+
+It prints `BOOTSTRAP_INVITE_TOKEN=` to that terminal only; the server log never contains it. The database stores only a SHA-256 of the token. The token lasts 24 hours and works once. Running the command again revokes the earlier token and prints a new one. Once the first person has signed in, the command refuses to run.
 
 Paste the token on the login page. The browser stores it in an HttpOnly cookie and sends the person to Authentik. After MFA, the browser generates an X25519 key, asks for a passphrase of at least 12 characters, and shows a personal recovery key once. The sole user may approve their own key. Every later key needs a different active admin.
 
