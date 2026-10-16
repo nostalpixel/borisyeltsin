@@ -25,11 +25,16 @@ var (
 	migrateErr error
 )
 
-// Pool returns a connection pool. The test is skipped when Docker is unavailable.
+// Pool returns a connection pool. The test is skipped when Docker is
+// unavailable, unless TESTPG_REQUIRED=1, which CI sets so a green run always
+// means the database tests ran.
 func Pool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	once.Do(start)
 	if startErr != nil {
+		if os.Getenv("TESTPG_REQUIRED") == "1" {
+			t.Fatal(startErr.Error())
+		}
 		t.Skip(startErr.Error())
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
@@ -43,6 +48,24 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	if migrateErr != nil {
 		t.Fatal(migrateErr)
 	}
+	return pool
+}
+
+// EmptyDatabase creates a separate database with no tables and returns a pool
+// for it. Tests that need an empty users table or a specific migration state
+// use it instead of the shared database.
+func EmptyDatabase(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	admin := Pool(t)
+	dbName := "t_" + strings.ReplaceAll(strconv.FormatInt(time.Now().UnixNano(), 36), "-", "")
+	if _, err := admin.Exec(context.Background(), "CREATE DATABASE "+dbName); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(context.Background(), strings.Replace(dsn, "/boriseltsyn?", "/"+dbName+"?", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
 	return pool
 }
 

@@ -58,18 +58,28 @@ func (s *Server) addUser(t *testing.T, q *db.Queries, org uuid.UUID, role, statu
 	if err != nil {
 		t.Fatal(err)
 	}
+	return newSession(t, q, user)
+}
+
+// newSession stores a session the way finishLogin does: the cookie holds the
+// token, the database holds its SHA-256.
+func newSession(t *testing.T, q *db.Queries, user db.User) actor {
+	t.Helper()
 	secret, err := newSecret()
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := q.CreateSession(context.Background(), db.CreateSessionParams{
-		ID: uuid.New(), UserID: user.ID, CsrfSecret: secret, Amr: []string{"pwd", "mfa"},
-		ExpiresAt: time.Now().Add(time.Hour),
-	})
+	plain, hash, err := token.New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return actor{user: user, csrf: secret, cookie: &http.Cookie{Name: "be_session", Value: session.ID.String()}}
+	if _, err := q.CreateSession(context.Background(), db.CreateSessionParams{
+		TokenHash: hash, UserID: user.ID, CsrfSecret: secret, Amr: []string{"pwd", "mfa"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return actor{user: user, csrf: secret, cookie: &http.Cookie{Name: "be_session", Value: plain}}
 }
 
 func call(handler http.Handler, method, path string, body any, a *actor) *httptest.ResponseRecorder {
@@ -116,8 +126,8 @@ func TestHealthAndInviteRules(t *testing.T) {
 	session, code := srv.finishLogin(context.Background(), identityClaims{
 		Issuer: "https://idp.example", Subject: "other", Email: "a@example.com", AMR: []string{"mfa"},
 	}, hash)
-	if code != "access_denied" || session.ID != uuid.Nil {
-		t.Fatalf("mismatch session=%s code=%s", session.ID, code)
+	if code != "access_denied" || session != "" {
+		t.Fatalf("mismatch session=%q code=%s", session, code)
 	}
 	stored, err := q.GetInvitationByHash(context.Background(), hash)
 	if err != nil || stored.AcceptedAt.Valid {
@@ -126,7 +136,7 @@ func TestHealthAndInviteRules(t *testing.T) {
 	session, code = srv.finishLogin(context.Background(), identityClaims{
 		Issuer: "https://idp.example", Subject: "subject-1", Email: "a@example.com", Name: "Ada", AMR: []string{"mfa"},
 	}, hash)
-	if code != "" || session.ID == uuid.Nil {
+	if code != "" || session == "" {
 		t.Fatal(code)
 	}
 	_, code = srv.finishLogin(context.Background(), identityClaims{
@@ -243,14 +253,7 @@ func TestAuthorizationCSRFAndVaultBoundary(t *testing.T) {
 			subject = user
 		}
 	}
-	secret, _ := newSecret()
-	session, err := q.CreateSession(context.Background(), db.CreateSessionParams{
-		ID: uuid.New(), UserID: subject.ID, CsrfSecret: secret, Amr: []string{"mfa"}, ExpiresAt: time.Now().Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner := actor{user: subject, csrf: secret, cookie: &http.Cookie{Name: "be_session", Value: session.ID.String()}}
+	owner := newSession(t, q, subject)
 	// A second user exists, so self-approval must fail. Use an org with exactly one user.
 	oneOrg, err := q.CreateOrganization(context.Background(), "One")
 	if err != nil {
@@ -285,8 +288,9 @@ func TestAuthorizationCSRFAndVaultBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/envelopes", map[string]string{
+	env := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/envelopes", map[string]any{
 		"user_id": one.user.ID.String(), "fingerprint": identRow.Fingerprint, "ciphertext": pub["private_key_ciphertext"].(string),
+		"expected_key_version": 1,
 	}, &one)
 	if env.Code != http.StatusOK {
 		t.Fatalf("envelope %d %s", env.Code, env.Body.String())
@@ -400,8 +404,9 @@ func TestRotationKeepsAccountLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/envelopes", map[string]string{
+	env := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/envelopes", map[string]any{
 		"user_id": admin.user.ID.String(), "fingerprint": ident.Fingerprint, "ciphertext": pub["private_key_ciphertext"].(string),
+		"expected_key_version": 1,
 	}, &admin)
 	if env.Code != http.StatusOK {
 		t.Fatalf("envelope %d %s", env.Code, env.Body.String())
@@ -409,15 +414,15 @@ func TestRotationKeepsAccountLink(t *testing.T) {
 	if err := q.SetRecoveryReady(context.Background(), db.SetRecoveryReadyParams{ID: org.ID, RecoveryReady: true}); err != nil {
 		t.Fatal(err)
 	}
-	recEnv := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/recovery-envelope", map[string]string{
-		"nonce": b64(24), "ciphertext": b64(32),
+	recEnv := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/recovery-envelope", map[string]any{
+		"nonce": b64(24), "ciphertext": b64(48), "expected_key_version": 1,
 	}, &admin)
 	if recEnv.Code != http.StatusOK {
 		t.Fatalf("recovery envelope %d %s", recEnv.Code, recEnv.Body.String())
 	}
 	itemID := uuid.New()
-	item := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/items", map[string]string{
-		"id": itemID.String(), "nonce": b64(24), "ciphertext": b64(32),
+	item := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/items", map[string]any{
+		"id": itemID.String(), "nonce": b64(24), "ciphertext": b64(32), "expected_key_version": 1,
 	}, &admin)
 	if item.Code != http.StatusCreated {
 		t.Fatalf("item %d %s", item.Code, item.Body.String())
@@ -442,13 +447,13 @@ func TestRotationKeepsAccountLink(t *testing.T) {
 	}
 	rotated := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/rotation", map[string]any{
 		"expected_key_version": 1,
-		"items": []map[string]string{{
-			"id": itemID.String(), "nonce": b64(24), "ciphertext": b64(40),
+		"items": []map[string]any{{
+			"id": itemID.String(), "version": 1, "nonce": b64(24), "ciphertext": b64(40),
 		}},
 		"envelopes": []map[string]string{{
 			"user_id": admin.user.ID.String(), "fingerprint": ident.Fingerprint, "ciphertext": pub["recovery_ciphertext"].(string),
 		}},
-		"recovery": map[string]string{"nonce": b64(24), "ciphertext": b64(32)},
+		"recovery": map[string]string{"nonce": b64(24), "ciphertext": b64(48)},
 	}, &admin)
 	if rotated.Code != http.StatusOK {
 		t.Fatalf("rotate %d %s", rotated.Code, rotated.Body.String())

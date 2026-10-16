@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -33,6 +34,12 @@ func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
 func isUnique(err error) bool {
 	var pg *pgconn.PgError
 	return errors.As(err, &pg) && pg.Code == "23505"
+}
+
+// isLockTimeout reports a lock_not_available error from SET LOCAL lock_timeout.
+func isLockTimeout(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "55P03"
 }
 
 func (s *Server) fail(w http.ResponseWriter, status int, code string) {
@@ -73,6 +80,12 @@ func (s *Server) sendError(w http.ResponseWriter, err error) {
 		s.fail(w, http.StatusConflict, "conflict")
 		return
 	}
+	if isLockTimeout(err) {
+		slog.Warn("vault lock timeout", "error", err)
+		s.fail(w, http.StatusServiceUnavailable, "vault_busy")
+		return
+	}
+	slog.Error("request failed", "error", err)
 	s.fail(w, http.StatusInternalServerError, "server")
 }
 

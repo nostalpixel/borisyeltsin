@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nostalpixel/borisyeltsin/internal/authz"
 	"github.com/nostalpixel/borisyeltsin/internal/config"
 	"github.com/nostalpixel/borisyeltsin/internal/db"
@@ -132,7 +134,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		deny()
 		return
 	}
-	session, code := s.finishLogin(r.Context(), identityClaims{
+	sessionToken, code := s.finishLogin(r.Context(), identityClaims{
 		Issuer:  idToken.Issuer,
 		Subject: idToken.Subject,
 		Email:   parsed.Email,
@@ -143,17 +145,18 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		deny()
 		return
 	}
-	s.setCookie(w, "be_session", session.ID.String(), "/", int(s.Cfg.SessionTTL.Seconds()))
+	s.setCookie(w, "be_session", sessionToken, "/", int(s.Cfg.SessionTTL.Seconds()))
 	http.Redirect(w, r, s.Cfg.PublicURL+"/", http.StatusSeeOther)
 }
 
-func (s *Server) finishLogin(ctx context.Context, claims identityClaims, inviteHash []byte) (db.Session, string) {
+// finishLogin returns the session cookie value. Only its SHA-256 is stored.
+func (s *Server) finishLogin(ctx context.Context, claims identityClaims, inviteHash []byte) (string, string) {
 	if claims.Issuer == "" || claims.Subject == "" || !authz.MFASatisfied(claims.AMR, s.Cfg.MFAAMR) {
-		return db.Session{}, "access_denied"
+		return "", "access_denied"
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
-		return db.Session{}, "server"
+		return "", "server"
 	}
 	defer tx.Rollback(ctx)
 	q := s.Q.WithTx(tx)
@@ -163,35 +166,39 @@ func (s *Server) finishLogin(ctx context.Context, claims identityClaims, inviteH
 	}
 	if err != nil {
 		if code, ok := loginCode(err); ok {
-			return db.Session{}, code
+			return "", code
 		}
-		return db.Session{}, "server"
+		return "", "server"
 	}
 	if user.Status == "revoked" {
 		s.audit(ctx, user.OrganizationID, &user.ID, "auth_revoked", "user", user.ID.String(), nil)
-		return db.Session{}, "access_denied"
+		return "", "access_denied"
 	}
 	secret, err := newSecret()
 	if err != nil {
-		return db.Session{}, "server"
+		return "", "server"
 	}
-	sessionID := uuid.New()
-	session, err := q.CreateSession(ctx, db.CreateSessionParams{
-		ID:         sessionID,
+	plain, hash, err := token.New()
+	if err != nil {
+		return "", "server"
+	}
+	if _, err := q.CreateSession(ctx, db.CreateSessionParams{
+		TokenHash:  hash,
 		UserID:     user.ID,
 		CsrfSecret: secret,
 		Amr:        claims.AMR,
 		ExpiresAt:  s.now().Add(s.Cfg.SessionTTL),
-	})
-	if err != nil {
-		return db.Session{}, "server"
+	}); err != nil {
+		return "", "server"
 	}
 	actor := user.ID
-	s.audit(ctx, user.OrganizationID, &actor, "auth_success", "user", user.ID.String(), nil)
-	if err := tx.Commit(ctx); err != nil {
-		return db.Session{}, "server"
+	if err := auditTx(ctx, q, user.OrganizationID, &actor, "auth_success", "user", user.ID.String(), nil); err != nil {
+		return "", "server"
 	}
-	return session, ""
+	if err := tx.Commit(ctx); err != nil {
+		return "", "server"
+	}
+	return plain, ""
 }
 
 func loginCode(err error) (string, bool) {
@@ -204,6 +211,11 @@ func loginCode(err error) (string, bool) {
 func (s *Server) acceptInvite(ctx context.Context, q *db.Queries, claims identityClaims, inviteHash []byte) (db.User, error) {
 	if len(inviteHash) == 0 {
 		return db.User{}, errStatus(http.StatusForbidden, "access_denied")
+	}
+	// Serializes with bootstrap-invite, which revokes open invites while the
+	// organization has no users.
+	if err := q.LockBootstrap(ctx); err != nil {
+		return db.User{}, err
 	}
 	inv, err := q.GetInvitationByHash(ctx, inviteHash)
 	if err != nil || inv.AcceptedAt.Valid || inv.RevokedAt.Valid || !inv.ExpiresAt.After(s.now()) {
@@ -236,7 +248,9 @@ func (s *Server) acceptInvite(ctx context.Context, q *db.Queries, claims identit
 	if err != nil {
 		return db.User{}, err
 	}
-	s.audit(ctx, inv.OrganizationID, &user.ID, "invite_accepted", "invitation", inv.ID.String(), nil)
+	if err := auditTx(ctx, q, inv.OrganizationID, &user.ID, "invite_accepted", "invitation", inv.ID.String(), nil); err != nil {
+		return db.User{}, err
+	}
 	return user, nil
 }
 
@@ -493,49 +507,49 @@ func (s *Server) reviewKey(w http.ResponseWriter, r *http.Request, approve bool)
 		s.fail(w, http.StatusConflict, "nothing_to_review")
 		return
 	}
-	tx, err := s.Pool.Begin(r.Context())
-	if err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	q := s.Q.WithTx(tx)
-	if _, err := q.ReplaceCryptoIdentity(r.Context(), db.ReplaceCryptoIdentityParams{
-		UserID: subjectID, PublicKey: proposal.PublicKey, Fingerprint: proposal.Fingerprint,
-		KdfAlgorithm: proposal.KdfAlgorithm, KdfOpslimit: proposal.KdfOpslimit, KdfMemlimit: proposal.KdfMemlimit,
-		KdfSalt: proposal.KdfSalt, PrivateKeyNonce: proposal.PrivateKeyNonce,
-		PrivateKeyCiphertext: proposal.PrivateKeyCiphertext, RecoveryNonce: proposal.RecoveryNonce,
-		RecoveryCiphertext: proposal.RecoveryCiphertext, ApprovedBy: &p.UserID,
-	}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if err := q.DeleteCryptoProposal(r.Context(), subjectID); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if err := q.DeleteStaleEnvelopesForUser(r.Context(), db.DeleteStaleEnvelopesForUserParams{
-		UserID: subjectID, RecipientFingerprint: proposal.Fingerprint,
-	}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	vaultIDs, err := q.ListVaultIDsForUser(r.Context(), subjectID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	for _, id := range vaultIDs {
-		if err := q.SetVaultRotationRequired(r.Context(), db.SetVaultRotationRequiredParams{ID: id, RotationRequired: true}); err != nil {
-			s.sendError(w, err)
-			return
+	err = s.inTx(r.Context(), func(q *db.Queries) error {
+		vaultIDs, err := q.ListVaultIDsForUser(r.Context(), subjectID)
+		if err != nil {
+			return err
 		}
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
+		memberships, err := q.ListMembershipsForUser(r.Context(), subjectID)
+		if err != nil {
+			return err
+		}
+		for _, member := range memberships {
+			vaultIDs = append(vaultIDs, member.VaultID)
+		}
+		if _, err := lockVaults(r.Context(), q, p.OrgID, vaultIDs); err != nil {
+			return err
+		}
+		if _, err := q.ReplaceCryptoIdentity(r.Context(), db.ReplaceCryptoIdentityParams{
+			UserID: subjectID, PublicKey: proposal.PublicKey, Fingerprint: proposal.Fingerprint,
+			KdfAlgorithm: proposal.KdfAlgorithm, KdfOpslimit: proposal.KdfOpslimit, KdfMemlimit: proposal.KdfMemlimit,
+			KdfSalt: proposal.KdfSalt, PrivateKeyNonce: proposal.PrivateKeyNonce,
+			PrivateKeyCiphertext: proposal.PrivateKeyCiphertext, RecoveryNonce: proposal.RecoveryNonce,
+			RecoveryCiphertext: proposal.RecoveryCiphertext, ApprovedBy: &p.UserID,
+		}); err != nil {
+			return err
+		}
+		if err := q.DeleteCryptoProposal(r.Context(), subjectID); err != nil {
+			return err
+		}
+		if err := q.DeleteStaleEnvelopesForUser(r.Context(), db.DeleteStaleEnvelopesForUserParams{
+			UserID: subjectID, RecipientFingerprint: proposal.Fingerprint,
+		}); err != nil {
+			return err
+		}
+		for _, id := range vaultIDs {
+			if err := q.SetVaultRotationRequired(r.Context(), db.SetVaultRotationRequiredParams{ID: id, RotationRequired: true}); err != nil {
+				return err
+			}
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "crypto_replaced", "user", subjectID.String(), map[string]string{"fingerprint": proposal.Fingerprint})
+	})
+	if err != nil {
+		s.sendError(w, err)
 		return
 	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "crypto_replaced", "user", subjectID.String(), map[string]string{"fingerprint": proposal.Fingerprint})
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "approved", "fingerprint": proposal.Fingerprint})
 }
 
@@ -651,51 +665,63 @@ func (s *Server) revokeUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	tx, err := s.Pool.Begin(r.Context())
+	err = s.inTx(r.Context(), func(q *db.Queries) error {
+		memberships, err := q.ListMembershipsForUser(r.Context(), userID)
+		if err != nil {
+			return err
+		}
+		ids := make([]uuid.UUID, 0, len(memberships))
+		for _, member := range memberships {
+			ids = append(ids, member.VaultID)
+		}
+		if _, err := lockVaults(r.Context(), q, p.OrgID, ids); err != nil {
+			return err
+		}
+		// Re-read under the locks: a vault never loses its last owner.
+		memberships, err = q.ListMembershipsForUser(r.Context(), userID)
+		if err != nil {
+			return err
+		}
+		for _, member := range memberships {
+			if member.Role != "owner" {
+				continue
+			}
+			others, err := otherOwners(r.Context(), q, member.VaultID, userID)
+			if err != nil {
+				return err
+			}
+			if others == 0 {
+				return errStatus(http.StatusConflict, "last_vault_owner")
+			}
+		}
+		if _, err := q.UpdateUserStatus(r.Context(), db.UpdateUserStatusParams{ID: userID, OrganizationID: p.OrgID, Status: "revoked"}); err != nil {
+			return err
+		}
+		if err := q.RevokeSessionsForUser(r.Context(), userID); err != nil {
+			return err
+		}
+		for _, member := range memberships {
+			if err := q.DeleteVaultMember(r.Context(), db.DeleteVaultMemberParams{VaultID: member.VaultID, UserID: userID}); err != nil {
+				return err
+			}
+			if err := q.SetVaultRotationRequired(r.Context(), db.SetVaultRotationRequiredParams{ID: member.VaultID, RotationRequired: true}); err != nil {
+				return err
+			}
+			if _, err := q.InsertCredentialFlag(r.Context(), db.InsertCredentialFlagParams{
+				OrganizationID: p.OrgID, Reason: "offboarded",
+			}); err != nil {
+				return err
+			}
+		}
+		if err := q.DeleteEnvelopesForUser(r.Context(), userID); err != nil {
+			return err
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "user_revoked", "user", userID.String(), nil)
+	})
 	if err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	q := s.Q.WithTx(tx)
-	if _, err := q.UpdateUserStatus(r.Context(), db.UpdateUserStatusParams{ID: userID, OrganizationID: p.OrgID, Status: "revoked"}); err != nil {
 		s.sendError(w, err)
 		return
 	}
-	if err := q.RevokeSessionsForUser(r.Context(), userID); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	memberships, err := q.ListMembershipsForUser(r.Context(), userID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	for _, member := range memberships {
-		if err := q.DeleteVaultMember(r.Context(), db.DeleteVaultMemberParams{VaultID: member.VaultID, UserID: userID}); err != nil {
-			s.sendError(w, err)
-			return
-		}
-		if err := q.SetVaultRotationRequired(r.Context(), db.SetVaultRotationRequiredParams{ID: member.VaultID, RotationRequired: true}); err != nil {
-			s.sendError(w, err)
-			return
-		}
-		if _, err := q.InsertCredentialFlag(r.Context(), db.InsertCredentialFlagParams{
-			OrganizationID: p.OrgID, Reason: "offboarded",
-		}); err != nil {
-			s.sendError(w, err)
-			return
-		}
-	}
-	if err := q.DeleteEnvelopesForUser(r.Context(), userID); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
-	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "user_revoked", "user", userID.String(), nil)
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
@@ -790,19 +816,36 @@ func (s *Server) revokeInvitation(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// Bootstrap creates the first organization and prints nothing itself.
-// The caller must show the returned token once.
-func Bootstrap(ctx context.Context, q *db.Queries, cfg config.Config) (string, bool, error) {
+// ErrBootstrapClosed means the organization already has users.
+var ErrBootstrapClosed = errors.New("bootstrap is closed: the database already has users")
+
+// Bootstrap creates the first organization if needed and returns a new
+// first-admin invitation token. Earlier unaccepted invitations are revoked, so
+// only one bootstrap token is valid at a time. The caller prints the token;
+// nothing is logged here. Invitation acceptance takes the same advisory lock.
+func Bootstrap(ctx context.Context, pool *pgxpool.Pool, cfg config.Config) (string, error) {
 	if !cfg.Bootstrap.Enabled() {
-		return "", false, nil
+		return "", errors.New("set BOOTSTRAP_ORG_NAME, BOOTSTRAP_OIDC_ISSUER, BOOTSTRAP_OIDC_SUBJECT and BOOTSTRAP_EMAIL")
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	q := db.New(pool).WithTx(tx)
+	if err := q.LockBootstrap(ctx); err != nil {
+		return "", err
 	}
 	users, err := q.CountAllUsers(ctx)
-	if err != nil || users > 0 {
-		return "", false, err
+	if err != nil {
+		return "", err
+	}
+	if users > 0 {
+		return "", ErrBootstrapClosed
 	}
 	orgs, err := q.CountOrganizations(ctx)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	var org db.Organization
 	if orgs == 0 {
@@ -811,11 +854,14 @@ func Bootstrap(ctx context.Context, q *db.Queries, cfg config.Config) (string, b
 		org, err = q.FirstOrganization(ctx)
 	}
 	if err != nil {
-		return "", false, err
+		return "", err
+	}
+	if err := q.RevokeOpenInvitations(ctx, org.ID); err != nil {
+		return "", err
 	}
 	plain, hash, err := token.New()
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	inv, err := q.CreateInvitation(ctx, db.CreateInvitationParams{
 		OrganizationID: org.ID, TokenHash: hash, IntendedIssuer: cfg.Bootstrap.Issuer,
@@ -823,11 +869,22 @@ func Bootstrap(ctx context.Context, q *db.Queries, cfg config.Config) (string, b
 		Role: "admin", ExpiresAt: time.Now().Add(token.InviteTTL),
 	})
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-	_ = q.InsertAuditEvent(ctx, db.InsertAuditEventParams{
-		OrganizationID: org.ID, Action: "bootstrap_invite", TargetType: "invitation",
-		TargetID: inv.ID.String(), Metadata: []byte(`{}`),
-	})
-	return plain, true, nil
+	if err := auditTx(ctx, q, org.ID, nil, "bootstrap_invite", "invitation", inv.ID.String(), nil); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return plain, nil
+}
+
+// BootstrapPending reports whether the first admin still has to be invited.
+func BootstrapPending(ctx context.Context, q *db.Queries, cfg config.Config) (bool, error) {
+	if !cfg.Bootstrap.Enabled() {
+		return false, nil
+	}
+	users, err := q.CountAllUsers(ctx)
+	return users == 0, err
 }

@@ -111,7 +111,7 @@ Integration tests start Postgres with Docker and skip when Docker is unavailable
 
 ## Bootstrap
 
-When the database has zero organizations and the bootstrap env vars are set, startup creates the org and prints one invite token to stdout (`BOOTSTRAP_INVITE_TOKEN=`). The token is not logged again. There is no public registration.
+While the database has no users and the bootstrap env vars are set, `boriseltsyn bootstrap-invite` (run with `docker compose exec`) creates the org if needed, revokes earlier unaccepted invites, and prints one invite token to that terminal (`BOOTSTRAP_INVITE_TOKEN=`). Startup only logs a reminder. There is no public registration.
 
 ## Reference app
 

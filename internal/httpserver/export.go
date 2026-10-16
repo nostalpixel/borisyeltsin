@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/nostalpixel/borisyeltsin/internal/authz"
 	"github.com/nostalpixel/borisyeltsin/internal/spend"
@@ -35,7 +36,7 @@ func (s *Server) exportRows(r *http.Request) ([][]string, error) {
 			byAccount[sub.AccountID.String()] = i
 		}
 	}
-	header := []string{"Название", "Сайт", "Категория", "Аккаунт", "Логин", "Стоимость", "Валюта", "Цикл", "Дата оплаты", "Способ оплаты", "Заметки"}
+	header := []string{"Service", "Website", "Category", "Account", "Login", "Cost", "Currency", "Cycle", "Next payment", "Payment method", "Notes"}
 	rows := [][]string{header}
 	for _, svc := range services {
 		if svc.ArchivedAt.Valid || !authz.CanViewService(p.Role, p.UserID, svc.OwnerID, grants[svc.ID][p.UserID]) {
@@ -76,7 +77,7 @@ func (s *Server) exportCSV(w http.ResponseWriter, r *http.Request) {
 	var buf bytes.Buffer
 	buf.Write([]byte{0xEF, 0xBB, 0xBF})
 	writer := csv.NewWriter(&buf)
-	if err := writer.WriteAll(rows); err != nil {
+	if err := writer.WriteAll(csvSafe(rows)); err != nil {
 		s.fail(w, http.StatusInternalServerError, "server")
 		return
 	}
@@ -100,4 +101,21 @@ func (s *Server) exportXLSX(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", "attachment; filename=\"services.xlsx\"")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	_, _ = w.Write(body)
+}
+
+// csvSafe prefixes cells that a spreadsheet would read as a formula with an
+// apostrophe. Service names and notes are user input. The XLSX export writes
+// inline strings, which are never formulas, so it does not need this.
+func csvSafe(rows [][]string) [][]string {
+	out := make([][]string, len(rows))
+	for i, row := range rows {
+		out[i] = make([]string, len(row))
+		for j, cell := range row {
+			if cell != "" && strings.ContainsRune("=+-@\t\r", rune(cell[0])) {
+				cell = "'" + cell
+			}
+			out[i][j] = cell
+		}
+	}
+	return out
 }

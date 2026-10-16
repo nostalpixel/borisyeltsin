@@ -120,7 +120,7 @@ func Parse(raw []byte) ([]Service, error) {
 			}
 			label := clip(acc.Label, 80)
 			if label == "" {
-				label = "Аккаунт"
+				label = "Account"
 				if i >= 0 {
 					label = clip(label, 80)
 				}
