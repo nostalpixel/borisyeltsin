@@ -196,6 +196,17 @@ func (q *Queries) CountUsers(ctx context.Context, organizationID uuid.UUID) (int
 	return column_1, err
 }
 
+const countVaults = `-- name: CountVaults :one
+SELECT count(*) FROM vaults WHERE organization_id = $1 AND archived_at IS NULL
+`
+
+func (q *Queries) CountVaults(ctx context.Context, organizationID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countVaults, organizationID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAccount = `-- name: CreateAccount :one
 INSERT INTO service_accounts (service_id, label, login_hint, card_label, notes, position)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -627,7 +638,7 @@ func (q *Queries) DeletePaymentMethod(ctx context.Context, arg DeletePaymentMeth
 }
 
 const deletePendingIdentity = `-- name: DeletePendingIdentity :exec
-DELETE FROM crypto_identities WHERE user_id = $1 AND status = 'pending'
+DELETE FROM crypto_identities WHERE user_id = $1 AND status IN ('pending', 'rejected')
 `
 
 func (q *Queries) DeletePendingIdentity(ctx context.Context, userID uuid.UUID) error {
@@ -1613,6 +1624,35 @@ func (q *Queries) ListCustodians(ctx context.Context, organizationID uuid.UUID) 
 	return items, nil
 }
 
+const listEnvelopeHolders = `-- name: ListEnvelopeHolders :many
+SELECT user_id FROM vault_key_envelopes WHERE vault_id = $1 AND key_version = $2
+`
+
+type ListEnvelopeHoldersParams struct {
+	VaultID    uuid.UUID `json:"vault_id"`
+	KeyVersion int32     `json:"key_version"`
+}
+
+func (q *Queries) ListEnvelopeHolders(ctx context.Context, arg ListEnvelopeHoldersParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listEnvelopeHolders, arg.VaultID, arg.KeyVersion)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var user_id uuid.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGrantsForOrg = `-- name: ListGrantsForOrg :many
 SELECT g.service_id, g.user_id
 FROM service_grants g
@@ -1665,6 +1705,50 @@ func (q *Queries) ListInvitations(ctx context.Context, organizationID uuid.UUID)
 			&i.AcceptedAt,
 			&i.RevokedAt,
 			&i.CreatedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listKeyProposals = `-- name: ListKeyProposals :many
+SELECT u.id AS user_id, u.display_name, u.email, p.public_key, p.fingerprint, p.created_at
+FROM crypto_proposals p
+JOIN users u ON u.id = p.user_id
+WHERE u.organization_id = $1
+ORDER BY p.created_at
+`
+
+type ListKeyProposalsRow struct {
+	UserID      uuid.UUID `json:"user_id"`
+	DisplayName string    `json:"display_name"`
+	Email       string    `json:"email"`
+	PublicKey   []byte    `json:"public_key"`
+	Fingerprint string    `json:"fingerprint"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) ListKeyProposals(ctx context.Context, organizationID uuid.UUID) ([]ListKeyProposalsRow, error) {
+	rows, err := q.db.Query(ctx, listKeyProposals, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListKeyProposalsRow{}
+	for rows.Next() {
+		var i ListKeyProposalsRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.DisplayName,
+			&i.Email,
+			&i.PublicKey,
+			&i.Fingerprint,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -2557,6 +2641,59 @@ func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (S
 		&i.Position,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updatePassphraseBackup = `-- name: UpdatePassphraseBackup :one
+UPDATE crypto_identities SET
+    kdf_opslimit = $1,
+    kdf_memlimit = $2,
+    kdf_salt = $3,
+    private_key_nonce = $4,
+    private_key_ciphertext = $5
+WHERE user_id = $6 AND status = 'approved' AND fingerprint = $7
+RETURNING user_id, public_key, fingerprint, kdf_algorithm, kdf_opslimit, kdf_memlimit, kdf_salt, private_key_nonce, private_key_ciphertext, recovery_nonce, recovery_ciphertext, key_version, status, approved_by, approved_at, created_at
+`
+
+type UpdatePassphraseBackupParams struct {
+	KdfOpslimit          int32     `json:"kdf_opslimit"`
+	KdfMemlimit          int32     `json:"kdf_memlimit"`
+	KdfSalt              []byte    `json:"kdf_salt"`
+	PrivateKeyNonce      []byte    `json:"private_key_nonce"`
+	PrivateKeyCiphertext []byte    `json:"private_key_ciphertext"`
+	UserID               uuid.UUID `json:"user_id"`
+	Fingerprint          string    `json:"fingerprint"`
+}
+
+func (q *Queries) UpdatePassphraseBackup(ctx context.Context, arg UpdatePassphraseBackupParams) (CryptoIdentity, error) {
+	row := q.db.QueryRow(ctx, updatePassphraseBackup,
+		arg.KdfOpslimit,
+		arg.KdfMemlimit,
+		arg.KdfSalt,
+		arg.PrivateKeyNonce,
+		arg.PrivateKeyCiphertext,
+		arg.UserID,
+		arg.Fingerprint,
+	)
+	var i CryptoIdentity
+	err := row.Scan(
+		&i.UserID,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.KdfAlgorithm,
+		&i.KdfOpslimit,
+		&i.KdfMemlimit,
+		&i.KdfSalt,
+		&i.PrivateKeyNonce,
+		&i.PrivateKeyCiphertext,
+		&i.RecoveryNonce,
+		&i.RecoveryCiphertext,
+		&i.KeyVersion,
+		&i.Status,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }

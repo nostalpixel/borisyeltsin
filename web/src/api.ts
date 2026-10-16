@@ -48,6 +48,11 @@ const messages: Record<string, string> = {
   items_changed: "Passwords changed during the rotation. Reload the vault and rotate again.",
   version_conflict: "The vault key was already rotated. Reload the vault.",
   vault_busy: "The vault is busy. Try again in a moment.",
+  bad_passphrase: "That passphrase did not unlock your key. Check it, or use your recovery key.",
+  item_conflict_reloaded: "Someone else changed this password just now. Their version is loaded; your text is still in the field. Save again to replace theirs.",
+  needs_verification: "Verify this person's key first. Compare the fingerprint with them, then try again.",
+  vault_exists: "This organization already has a vault. Ask an owner to share it with you.",
+  proposal_rejected: "Replacement key rejected.",
   owner_envelope_first: "The vault owner has to unlock the vault once before sharing it.",
 };
 

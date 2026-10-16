@@ -28,6 +28,9 @@
   font-size: 22px;
   margin: 0 0 var(--s2);
 }
+.auth-card .btn {
+  white-space: normal;
+}
 .auth-card h2 {
   margin: 0;
 }
