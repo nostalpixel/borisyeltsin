@@ -48,7 +48,7 @@ Check a box only after tests for that slice pass.
 6. [x] Services, accounts, subscriptions, payment methods (nickname, issuer, last4, expiry only), payments, dashboard, 7/3/1 renewal alerts.
 7. [x] CSV and SpreadsheetML export. JSON import of the documented non-secret shape.
 8. [ ] Crypto document, then identity enrollment, fingerprint approval, vaults, envelopes, items, rotation, offboarding flags, 2-custodian recovery.
-9. [ ] React UI for those flows. Unlock and encrypt in the browser.
+9. [x] React UI for those flows. Unlock and encrypt in the browser.
 10. [ ] Dockerfile, Compose, `.env.example`, GitHub Actions, README, threat model, recovery runbook.
 
 ## Request rules

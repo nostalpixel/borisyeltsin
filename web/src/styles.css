@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.auth-wrap {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.auth-card {
+  width: min(460px, 100%);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 28px;
+}
+.auth-card h1 {
+  font-size: 24px;
+  letter-spacing: -0.6px;
+  margin: 8px 0 8px;
+}
+.banner {
+  background: #fff6e5;
+  color: #8b6517;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.banner.bad {
+  background: #fff0ec;
+  color: #a74c3e;
+}
+.secret-once {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  background: #f6f7fa;
+  border-radius: 8px;
+  padding: 12px;
+}
