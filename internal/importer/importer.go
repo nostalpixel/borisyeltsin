@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nostalpixel/boriseltsyn/internal/fieldsafe"
+	"github.com/nostalpixel/borisyeltsin/internal/fieldsafe"
 )
 
 const (

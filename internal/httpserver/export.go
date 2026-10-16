@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/nostalpixel/boriseltsyn/internal/authz"
-	"github.com/nostalpixel/boriseltsyn/internal/spend"
-	"github.com/nostalpixel/boriseltsyn/internal/xlsx"
+	"github.com/nostalpixel/borisyeltsin/internal/authz"
+	"github.com/nostalpixel/borisyeltsin/internal/spend"
+	"github.com/nostalpixel/borisyeltsin/internal/xlsx"
 )
 
 func (s *Server) exportRows(r *http.Request) ([][]string, error) {

@@ -13,11 +13,11 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nostalpixel/boriseltsyn/internal/authz"
-	"github.com/nostalpixel/boriseltsyn/internal/config"
-	"github.com/nostalpixel/boriseltsyn/internal/db"
-	"github.com/nostalpixel/boriseltsyn/internal/fieldsafe"
-	"github.com/nostalpixel/boriseltsyn/internal/limiter"
+	"github.com/nostalpixel/borisyeltsin/internal/authz"
+	"github.com/nostalpixel/borisyeltsin/internal/config"
+	"github.com/nostalpixel/borisyeltsin/internal/db"
+	"github.com/nostalpixel/borisyeltsin/internal/fieldsafe"
+	"github.com/nostalpixel/borisyeltsin/internal/limiter"
 )
 
 //go:embed all:dist

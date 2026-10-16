@@ -1,4 +1,4 @@
-module github.com/nostalpixel/boriseltsyn
+module github.com/nostalpixel/borisyeltsin
 
 go 1.26.9
 

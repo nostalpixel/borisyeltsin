@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nostalpixel/boriseltsyn/internal/db"
-	"github.com/nostalpixel/boriseltsyn/internal/spend"
+	"github.com/nostalpixel/borisyeltsin/internal/db"
+	"github.com/nostalpixel/borisyeltsin/internal/spend"
 )
 
 // Start checks renewal dates once a minute until ctx is cancelled.

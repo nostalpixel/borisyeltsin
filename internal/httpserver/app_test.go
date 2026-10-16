@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nostalpixel/boriseltsyn/internal/config"
-	"github.com/nostalpixel/boriseltsyn/internal/db"
-	"github.com/nostalpixel/boriseltsyn/internal/testpg"
-	"github.com/nostalpixel/boriseltsyn/internal/token"
+	"github.com/nostalpixel/borisyeltsin/internal/config"
+	"github.com/nostalpixel/borisyeltsin/internal/db"
+	"github.com/nostalpixel/borisyeltsin/internal/testpg"
+	"github.com/nostalpixel/borisyeltsin/internal/token"
 )
 
 func TestMain(m *testing.M) {

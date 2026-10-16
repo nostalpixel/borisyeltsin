@@ -223,7 +223,7 @@ __marimo__/
 # Local product spec (not part of the runtime tree)
 requirements/
 
-# BorisEltsyn — Go
+# BorisYeltsin — Go
 bin/
 /boriseltsyn
 *.exe
@@ -234,7 +234,7 @@ coverage.html
 vendor/
 .gocache/
 
-# BorisEltsyn — Node, Vite, Tailwind
+# BorisYeltsin — Node, Vite, Tailwind
 node_modules/
 web/node_modules/
 .vite/

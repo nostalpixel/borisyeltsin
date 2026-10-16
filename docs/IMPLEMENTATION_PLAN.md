@@ -1,4 +1,4 @@
-# BorisEltsyn implementation plan
+# BorisYeltsin implementation plan
 
 Agent contract for this repository. Spec lives in `requirements/INITIAL_REQUIREMENTS.md` (gitignored local copy). Ship a working modular monolith. Do not widen the stack.
 

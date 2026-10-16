@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
-	"github.com/nostalpixel/boriseltsyn/internal/authz"
-	"github.com/nostalpixel/boriseltsyn/internal/db"
+	"github.com/nostalpixel/borisyeltsin/internal/authz"
+	"github.com/nostalpixel/borisyeltsin/internal/db"
 )
 
 func (s *Server) memberVault(ctx context.Context, p Principal, vaultID uuid.UUID) (db.Vault, db.VaultMember, error) {
