@@ -97,8 +97,8 @@ func Parse(raw []byte) ([]Service, error) {
 			Description: clip(src.Description, 200),
 			Unclear:     src.Unclear,
 			Logo:        clip(src.Logo, 3),
-			Bg:          colorOr(src.Bg, "#eeeafc"),
-			Fg:          colorOr(src.Fg, "#7663c6"),
+			Bg:          colorOr(src.Bg, "#1a2238"),
+			Fg:          colorOr(src.Fg, "#f3e6cf"),
 		}
 		if item.Logo == "" {
 			item.Logo = strings.ToUpper(clip(name, 2))

@@ -14,6 +14,8 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // theme.test.ts reads theme.css?raw; Vitest stubs CSS unless told otherwise.
+    css: { include: [/theme\.css/] },
     testTimeout: 120000,
     hookTimeout: 120000,
   },

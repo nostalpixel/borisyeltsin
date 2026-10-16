@@ -109,7 +109,10 @@ export function App() {
   if (!ready) {
     return (
       <div className="auth-wrap">
-        <p className="modal-hint">Loading…</p>
+        <AuthBrand />
+        <p className="status-line">
+          &gt; loading<span className="cursor" aria-hidden="true" />
+        </p>
       </div>
     );
   }
@@ -127,14 +130,10 @@ export function App() {
     <div className="app">
       <aside className="side">
         <div className="brand">
-          <span className="brand-mark">▦</span> Services
+          <p className="wordmark small">BORISYELTSIN</p>
         </div>
         <div>
-          <div className="side-label">Workspace</div>
-          {view === "services" && data && (
-            <CategoryNav category={category} services={data.services} accounts={data.accounts} subscriptions={data.subscriptions} onPick={setCategory} />
-          )}
-          <div className="nav" style={{ marginTop: 18 }}>
+          <nav className="nav" aria-label="Sections">
             <button className={view === "services" ? "active" : ""} onClick={() => choose("services")}>
               Services
             </button>
@@ -146,13 +145,20 @@ export function App() {
                 Team
               </button>
             )}
-          </div>
+          </nav>
         </div>
+        {view === "services" && data && (
+          <div className="side-categories">
+            <div className="side-label">Categories</div>
+            <CategoryNav category={category} services={data.services} accounts={data.accounts} subscriptions={data.subscriptions} onPick={setCategory} />
+          </div>
+        )}
         <div className="side-foot">
-          {user.display_name}
-          <br />
-          {user.email}
-          <br />
+          <span className="who">
+            {user.display_name}
+            <br />
+            {user.email}
+          </span>
           <button
             className="text-button"
             onClick={() => {
@@ -214,8 +220,9 @@ function Login({ error }: { error: string | null }) {
 
   return (
     <div className="auth-wrap">
+      <AuthBrand />
       <form
-        className="auth-card grid gap-4"
+        className="auth-card"
         onSubmit={(event) => {
           event.preventDefault();
           const go = async () => {
@@ -227,7 +234,6 @@ function Login({ error }: { error: string | null }) {
           go().catch((err) => setMessage(explain(err)));
         }}
       >
-        <p className="eyebrow">BorisEltsyn</p>
         <h1>Sign in with an invitation</h1>
         <p className="intro">There is no public registration. Authentik checks the second factor.</p>
         {message && <div className="banner bad">{message}</div>}
@@ -252,8 +258,9 @@ function Enroll({ onDone }: { onDone: () => Promise<void> }) {
 
   return (
     <div className="auth-wrap">
+      <AuthBrand />
       <form
-        className="auth-card grid gap-4"
+        className="auth-card"
         onSubmit={(event) => {
           event.preventDefault();
           if (passphrase.length < 12) {
@@ -288,17 +295,16 @@ function Enroll({ onDone }: { onDone: () => Promise<void> }) {
             .finally(() => setBusy(false));
         }}
       >
-        <p className="eyebrow">Key</p>
         <h1>Create your personal key</h1>
         <p className="intro">The passphrase never leaves this browser. Your personal recovery key is shown once.</p>
         {error && <div className="banner bad">{error}</div>}
         <label className="field">
           <span>Passphrase</span>
-          <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="new-password" required />
+          <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="new-password" required disabled={draft !== null} />
         </label>
         <label className="field">
           <span>Repeat</span>
-          <input type="password" value={again} onChange={(event) => setAgain(event.target.value)} autoComplete="new-password" required />
+          <input type="password" value={again} onChange={(event) => setAgain(event.target.value)} autoComplete="new-password" required disabled={draft !== null} />
         </label>
         {recovery && (
           <>
@@ -320,8 +326,8 @@ function Pending({ user, onDone }: { user: SessionUser; onDone: () => Promise<vo
   const [error, setError] = useState("");
   return (
     <div className="auth-wrap">
-      <div className="auth-card grid gap-4">
-        <p className="eyebrow">Approval</p>
+      <AuthBrand />
+      <div className="auth-card stack">
         <h1>Your key is waiting for an admin</h1>
         <p className="intro">The ledger stays closed until your key is approved. If you are the only admin, approve your own key.</p>
         {error && <div className="banner bad">{error}</div>}
@@ -339,5 +345,14 @@ function Pending({ user, onDone }: { user: SessionUser; onDone: () => Promise<vo
         )}
       </div>
     </div>
+  );
+}
+
+function AuthBrand() {
+  return (
+    <header className="auth-brand">
+      <p className="wordmark large">BORISYELTSIN</p>
+      <p className="tagline">Everything is under control. Allegedly.</p>
+    </header>
   );
 }

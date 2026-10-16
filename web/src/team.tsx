@@ -47,7 +47,6 @@ export function TeamPage({ selfId }: { selfId: string }) {
 
   return (
     <div className="content">
-      <p className="eyebrow">Team</p>
       <h1>People and invitations</h1>
       <p className="intro">There is no self-registration. An invitation lasts 24 hours, works once, and is bound to an Authentik issuer and subject.</p>
       {error && <div className="banner bad">{error}</div>}
