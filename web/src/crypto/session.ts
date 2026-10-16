@@ -35,6 +35,8 @@ export type IdentityRecord = {
   kdf_salt?: string;
   private_key_nonce?: string;
   private_key_ciphertext?: string;
+  recovery_nonce?: string;
+  recovery_ciphertext?: string;
 };
 
 export type HeldKeys = {
@@ -81,6 +83,36 @@ export async function unlockIdentity(passphrase: string): Promise<HeldKeys> {
   const kek = deriveKek(passphrase, fromB64(me.kdf_salt), me.kdf_opslimit ?? KDF_OPSLIMIT, me.kdf_memlimit ?? KDF_MEMLIMIT);
   const privateKey = secretboxOpen({ nonce: fromB64(me.private_key_nonce), ciphertext: fromB64(me.private_key_ciphertext) }, kek);
   sodium.memzero(kek);
+  const publicKey = fromB64(me.public_key);
+  const fp = await fingerprint(publicKey);
+  if (fp !== me.fingerprint) {
+    sodium.memzero(privateKey);
+    throw new Error("fingerprint_mismatch");
+  }
+  return { publicKey, privateKey, fingerprint: fp };
+}
+
+export async function unlockWithRecoveryKey(recoveryKey: string): Promise<HeldKeys> {
+  await sodiumReady();
+  const me = await api<IdentityRecord>("/api/v1/crypto/me");
+  if (me.status !== "approved" || !me.public_key || !me.recovery_nonce || !me.recovery_ciphertext) {
+    throw new Error("key_not_approved");
+  }
+  const key = fromB64(recoveryKey.trim());
+  let privateKey: Uint8Array;
+  try {
+    if (key.length !== sodium.crypto_secretbox_KEYBYTES) {
+      throw new Error("bad_recovery_key");
+    }
+    privateKey = secretboxOpen({ nonce: fromB64(me.recovery_nonce), ciphertext: fromB64(me.recovery_ciphertext) }, key);
+  } catch (err) {
+    if (err instanceof Error && err.message === "bad_recovery_key") {
+      throw err;
+    }
+    throw new Error("bad_recovery_key");
+  } finally {
+    sodium.memzero(key);
+  }
   const publicKey = fromB64(me.public_key);
   const fp = await fingerprint(publicKey);
   if (fp !== me.fingerprint) {

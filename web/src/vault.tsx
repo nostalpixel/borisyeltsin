@@ -9,6 +9,7 @@ import {
   readVaultKey,
   rotateVault,
   unlockIdentity,
+  unlockWithRecoveryKey,
   writeOwnerEnvelope,
   type HeldKeys,
 } from "./crypto/session";
@@ -31,6 +32,8 @@ type Props = {
 
 export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Props) {
   const [passphrase, setPassphrase] = useState("");
+  const [recoveryKey, setRecoveryKey] = useState("");
+  const [useRecovery, setUseRecovery] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [keys, setKeys] = useState<PublicKey[]>([]);
@@ -59,6 +62,21 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
     }
   }
 
+  async function finishUnlock(held: HeldKeys) {
+    const vault = await ensureVault();
+    let vaultKey: Uint8Array;
+    try {
+      vaultKey = await readVaultKey(held, vault.id, vault.key_version);
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.status !== 404) throw err;
+      vaultKey = await newVaultKey();
+      await writeOwnerEnvelope(held, userId, vault.id, vault.key_version, vaultKey);
+    }
+    const passwords = recoveryReady ? await loadPasswords(vault, vaultKey) : {};
+    onOpen({ keys: held, vault, vaultKey, passwords });
+    setNotice(recoveryReady ? "Сейф открыт." : "Личный ключ открыт. Назначьте двух хранителей, чтобы записывать пароли.");
+  }
+
   return (
     <div className="content">
       <p className="eyebrow">Сейф</p>
@@ -72,31 +90,40 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
           onSubmit={(event) => {
             event.preventDefault();
             const phrase = passphrase;
+            const savedRecovery = recoveryKey;
             setPassphrase("");
+            setRecoveryKey("");
             run(async () => {
-              const held = await unlockIdentity(phrase);
-              const vault = await ensureVault();
-              let vaultKey: Uint8Array;
-              try {
-                vaultKey = await readVaultKey(held, vault.id, vault.key_version);
-              } catch (err) {
-                if (!(err instanceof ApiError) || err.status !== 404) throw err;
-                vaultKey = await newVaultKey();
-                await writeOwnerEnvelope(held, userId, vault.id, vault.key_version, vaultKey);
-              }
-              const passwords = recoveryReady ? await loadPasswords(vault, vaultKey) : {};
-              onOpen({ keys: held, vault, vaultKey, passwords });
-              setNotice(recoveryReady ? "Сейф открыт." : "Личный ключ открыт. Назначьте двух хранителей, чтобы записывать пароли.");
+              const held = useRecovery ? await unlockWithRecoveryKey(savedRecovery) : await unlockIdentity(phrase);
+              await finishUnlock(held);
             });
           }}
         >
-          <label className="field">
-            <span>Парольная фраза</span>
-            <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="current-password" required />
-          </label>
+          {useRecovery ? (
+            <label className="field">
+              <span>Ключ восстановления</span>
+              <textarea value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} rows={3} autoComplete="off" required />
+            </label>
+          ) : (
+            <label className="field">
+              <span>Парольная фраза</span>
+              <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="current-password" required />
+            </label>
+          )}
           <button className="btn primary" disabled={busy}>
             {busy ? "Открываем…" : "Открыть сейф"}
           </button>
+          <button
+            className="btn"
+            type="button"
+            onClick={() => {
+              setUseRecovery((current) => !current);
+              setError("");
+            }}
+          >
+            {useRecovery ? "Открыть парольной фразой" : "Открыть ключом восстановления"}
+          </button>
+          {useRecovery && <p className="modal-hint">Сброс пароля в Authentik этот ключ не заменяет. Ключ показывался один раз при создании.</p>}
         </form>
       )}
       {open && (
