@@ -31,3 +31,8 @@ Base UI is English (wave 1, C9). Add an i18n layer and other languages only afte
 **Cons / risks:** Bound to the site's RP ID, so a domain change breaks it. Browser support for PRF varies (good in Chromium; check Safari/Firefox versions in use). Adds a wrapping path, so it is a crypto-lock change: document in docs/CRYPTO.md and include in the independent review (same review as the PR3 recovery redesign). Does not help against malware on an unlocked device.
 **Context:** Login MFA with YubiKey already works through Authentik WebAuthn, as long as Authentik emits an `amr` value in the allow-list (`internal/authz/authz.go:108`). Verify that against a live Authentik flow.
 **Effort:** human M / CC S. **Priority:** P2. **Depends on:** C2 pin store, CRYPTO.md review.
+
+## Kubernetes (eng review E-3, non-goal kept)
+
+Not planned; spec §2/§12 rule it out. A single replica with plain manifests works today (one container + Postgres).
+Multi-replica would need: Postgres-backed rate limiting (today `internal/limiter` is per-process memory) and a leader lock (pg advisory lock) for `internal/scheduler`, which runs in every process. Helm chart only on concrete demand.
