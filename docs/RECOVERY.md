@@ -37,7 +37,7 @@ Vault items stay blocked until two custodians exist and a recovery envelope is s
 Both custodians bring their unsealed shares to one browser. One share is not enough, and the server will not combine them.
 
 1. Each custodian unlocks their own identity on a machine they trust, reveals their share, and carries it to the recovery machine. Prefer a machine one of them controls. Do not send shares through the application chat, email, or a ticket.
-2. On the vault page, paste share 1 and share 2 into the rotation form. Rotation is also the emergency path: it checks that the shares combine, builds a new vault key, re-encrypts items, and writes new member envelopes plus a new recovery envelope.
+2. On the vault page, paste share 1 and share 2 into the rotation form. Rotation needs a vault owner who can still open the vault: it builds a new vault key, re-encrypts items, and writes new member envelopes plus a new recovery envelope sealed under the combined key.
 3. Clear the share fields. The people who saw the shares should assume those copies exist until they destroy them.
 
 Rotation refuses to run unless the organization is `recovery_ready` and the posted envelopes match the current members and their approved fingerprints.
@@ -68,7 +68,7 @@ After a restore:
 
 ## Loss of the last vault member
 
-If no remaining member can open an envelope, recovery depends on the two sealed shares and on at least one custodian who can still open their share. The second share must still be in someone's possession in plaintext, or still sealed to a custodian who can open it.
+If no remaining member can open an envelope, the vault key exists only inside the recovery envelope, which opens with both shares together. This release has no in-app flow for that case yet: the client cannot read a vault it holds no envelope for. Keep at least two members with envelopes on every vault until the custodian recovery flow ships.
 
 There is no break-glass account. Do not add one.
 

@@ -20,6 +20,7 @@ export type OpenVault = {
   vault: VaultInfo;
   vaultKey: Uint8Array;
   passwords: Record<string, string>;
+  versions: Record<string, number>;
 };
 
 type Props = {
@@ -68,12 +69,14 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
     try {
       vaultKey = await readVaultKey(held, vault.id, vault.key_version);
     } catch (err) {
-      if (!(err instanceof ApiError) || err.status !== 404) throw err;
+      // A new key is minted only for a vault that never had one. Anywhere
+      // else a missing envelope means "not shared with you yet".
+      if (!(err instanceof ApiError) || err.status !== 404 || vault.initialized || vault.role !== "owner") throw err;
       vaultKey = await newVaultKey();
       await writeOwnerEnvelope(held, userId, vault.id, vault.key_version, vaultKey);
     }
-    const passwords = recoveryReady ? await loadPasswords(vault, vaultKey) : {};
-    onOpen({ keys: held, vault, vaultKey, passwords });
+    const items = recoveryReady ? await loadPasswords(vault, vaultKey) : { passwords: {}, versions: {} };
+    onOpen({ keys: held, vault, vaultKey, ...items });
     setNotice(recoveryReady ? "Vault unlocked." : "Personal key unlocked. Assign two custodians before saving passwords.");
   }
 
@@ -213,8 +216,8 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
               event.preventDefault();
               run(async () => {
                 const next = await rotateVault(open.vault, open.vaultKey, share1.trim(), share2.trim());
-                const passwords = await loadPasswords({ ...open.vault, key_version: next.keyVersion }, next.vaultKey);
-                onOpen({ ...open, vault: { ...open.vault, key_version: next.keyVersion, rotation_required: false }, vaultKey: next.vaultKey, passwords });
+                const items = await loadPasswords({ ...open.vault, key_version: next.keyVersion }, next.vaultKey);
+                onOpen({ ...open, vault: { ...open.vault, key_version: next.keyVersion, rotation_required: false }, vaultKey: next.vaultKey, ...items });
                 setShare1("");
                 setShare2("");
                 setNotice("Vault key rotated. Old envelopes were deleted.");

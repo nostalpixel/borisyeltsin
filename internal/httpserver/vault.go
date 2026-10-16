@@ -61,6 +61,7 @@ func (s *Server) listVaults(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]any{
 			"id": row.ID, "name": row.Name, "description": row.Description,
 			"key_version": row.KeyVersion, "rotation_required": row.RotationRequired, "role": role,
+			"initialized": row.Initialized,
 		})
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"vaults": out})
@@ -132,28 +133,28 @@ func (s *Server) getVault(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) approvedKey(ctx context.Context, org, userID uuid.UUID) (db.CryptoIdentity, error) {
+	return approvedKeyQ(ctx, s.Q, org, userID)
+}
+
+func approvedKeyQ(ctx context.Context, q *db.Queries, org, userID uuid.UUID) (db.CryptoIdentity, error) {
+	user, err := q.GetUser(ctx, db.GetUserParams{ID: userID, OrganizationID: org})
+	if err != nil || user.Status != "active" {
+		return db.CryptoIdentity{}, errStatus(http.StatusBadRequest, "bad_recipient")
+	}
+	ident, err := q.GetCryptoIdentity(ctx, userID)
+	if err != nil || ident.Status != "approved" {
+		return db.CryptoIdentity{}, errStatus(http.StatusBadRequest, "key_not_approved")
+	}
+	return ident, nil
+}
+
 func (s *Server) addVaultMember(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r)
 	vaultID, err := pathID(r, "vaultID")
 	if err != nil {
 		s.sendError(w, err)
 		return
-	}
-	vault, member, memberErr := s.memberVault(r.Context(), p, vaultID)
-	if memberErr != nil && p.Role != "admin" {
-		s.sendError(w, memberErr)
-		return
-	}
-	if p.Role != "admin" && !authz.CanAdminVault(member.Role) {
-		s.fail(w, http.StatusForbidden, "forbidden")
-		return
-	}
-	if memberErr != nil {
-		vault, err = s.metaVault(r.Context(), p, vaultID)
-		if err != nil {
-			s.sendError(w, err)
-			return
-		}
 	}
 	var body struct {
 		UserID uuid.UUID `json:"user_id"`
@@ -163,16 +164,33 @@ func (s *Server) addVaultMember(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, "bad_role")
 		return
 	}
-	user, err := s.Q.GetUser(r.Context(), db.GetUserParams{ID: body.UserID, OrganizationID: p.OrgID})
-	if err != nil || user.Status != "active" {
-		s.fail(w, http.StatusBadRequest, "bad_member")
-		return
-	}
-	if err := s.Q.UpsertVaultMember(r.Context(), db.UpsertVaultMemberParams{VaultID: vault.ID, UserID: body.UserID, Role: body.Role}); err != nil {
+	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
+		if err := requireKeyOwner(r.Context(), q, p, vault); err != nil {
+			return err
+		}
+		user, err := q.GetUser(r.Context(), db.GetUserParams{ID: body.UserID, OrganizationID: p.OrgID})
+		if err != nil || user.Status != "active" {
+			return errStatus(http.StatusBadRequest, "bad_member")
+		}
+		current, err := q.GetVaultMember(r.Context(), db.GetVaultMemberParams{VaultID: vault.ID, UserID: body.UserID})
+		if err == nil && current.Role == "owner" && body.Role != "owner" {
+			others, err := otherOwners(r.Context(), q, vault.ID, body.UserID)
+			if err != nil {
+				return err
+			}
+			if others == 0 {
+				return errStatus(http.StatusConflict, "last_vault_owner")
+			}
+		}
+		if err := q.UpsertVaultMember(r.Context(), db.UpsertVaultMemberParams{VaultID: vault.ID, UserID: body.UserID, Role: body.Role}); err != nil {
+			return err
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "vault_member_added", "vault", vault.ID.String(), map[string]string{"user_id": body.UserID.String(), "role": body.Role})
+	})
+	if err != nil {
 		s.sendError(w, err)
 		return
 	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "vault_member_added", "vault", vault.ID.String(), map[string]string{"user_id": body.UserID.String(), "role": body.Role})
 	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -188,56 +206,50 @@ func (s *Server) removeVaultMember(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	_, member, memberErr := s.memberVault(r.Context(), p, vaultID)
-	if memberErr != nil && p.Role != "admin" {
-		s.sendError(w, memberErr)
-		return
-	}
-	if p.Role != "admin" && !authz.CanAdminVault(member.Role) {
-		s.fail(w, http.StatusForbidden, "forbidden")
-		return
-	}
-	tx, err := s.Pool.Begin(r.Context())
+	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
+		if err := requireKeyOwner(r.Context(), q, p, vault); err != nil {
+			return err
+		}
+		target, err := q.GetVaultMember(r.Context(), db.GetVaultMemberParams{VaultID: vaultID, UserID: userID})
+		if err != nil {
+			return errStatus(http.StatusNotFound, "not_found")
+		}
+		if target.Role == "owner" {
+			others, err := otherOwners(r.Context(), q, vaultID, userID)
+			if err != nil {
+				return err
+			}
+			if others == 0 {
+				return errStatus(http.StatusConflict, "last_vault_owner")
+			}
+		}
+		if err := q.DeleteVaultMember(r.Context(), db.DeleteVaultMemberParams{VaultID: vaultID, UserID: userID}); err != nil {
+			return err
+		}
+		if err := q.DeleteEnvelopeForMember(r.Context(), db.DeleteEnvelopeForMemberParams{VaultID: vaultID, UserID: userID}); err != nil {
+			return err
+		}
+		if err := q.SetVaultRotationRequired(r.Context(), db.SetVaultRotationRequiredParams{ID: vaultID, RotationRequired: true}); err != nil {
+			return err
+		}
+		if _, err := q.InsertCredentialFlag(r.Context(), db.InsertCredentialFlagParams{OrganizationID: p.OrgID, Reason: "member_removed"}); err != nil {
+			return err
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "vault_member_removed", "vault", vaultID.String(), map[string]string{"user_id": userID.String()})
+	})
 	if err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	q := s.Q.WithTx(tx)
-	if err := q.DeleteVaultMember(r.Context(), db.DeleteVaultMemberParams{VaultID: vaultID, UserID: userID}); err != nil {
 		s.sendError(w, err)
 		return
 	}
-	if err := q.DeleteEnvelopeForMember(r.Context(), db.DeleteEnvelopeForMemberParams{VaultID: vaultID, UserID: userID}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if err := q.SetVaultRotationRequired(r.Context(), db.SetVaultRotationRequiredParams{ID: vaultID, RotationRequired: true}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if _, err := q.InsertCredentialFlag(r.Context(), db.InsertCredentialFlagParams{OrganizationID: p.OrgID, Reason: "member_removed"}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
-	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "vault_member_removed", "vault", vaultID.String(), map[string]string{"user_id": userID.String()})
 	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (s *Server) approvedKey(ctx context.Context, org, userID uuid.UUID) (db.CryptoIdentity, error) {
-	user, err := s.Q.GetUser(ctx, db.GetUserParams{ID: userID, OrganizationID: org})
-	if err != nil || user.Status != "active" {
-		return db.CryptoIdentity{}, errStatus(http.StatusBadRequest, "bad_recipient")
+// staleKey rejects writes made for a key version that is no longer current.
+func staleKey(expected int32, vault db.Vault) error {
+	if expected != vault.KeyVersion {
+		return errStatus(http.StatusConflict, "stale_key")
 	}
-	ident, err := s.Q.GetCryptoIdentity(ctx, userID)
-	if err != nil || ident.Status != "approved" {
-		return db.CryptoIdentity{}, errStatus(http.StatusBadRequest, "key_not_approved")
-	}
-	return ident, nil
+	return nil
 }
 
 func (s *Server) putEnvelope(w http.ResponseWriter, r *http.Request) {
@@ -247,19 +259,11 @@ func (s *Server) putEnvelope(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	vault, member, err := s.memberVault(r.Context(), p, vaultID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if !authz.CanAdminVault(member.Role) {
-		s.fail(w, http.StatusForbidden, "forbidden")
-		return
-	}
 	var body struct {
-		UserID      uuid.UUID `json:"user_id"`
-		Fingerprint string    `json:"fingerprint"`
-		Ciphertext  string    `json:"ciphertext"`
+		UserID             uuid.UUID `json:"user_id"`
+		Fingerprint        string    `json:"fingerprint"`
+		Ciphertext         string    `json:"ciphertext"`
+		ExpectedKeyVersion int32     `json:"expected_key_version"`
 	}
 	if !s.decode(w, r, &body) {
 		return
@@ -269,53 +273,51 @@ func (s *Server) putEnvelope(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, "bad_envelope")
 		return
 	}
-	recipient, err := s.Q.GetVaultMember(r.Context(), db.GetVaultMemberParams{VaultID: vaultID, UserID: body.UserID})
-	if err != nil {
-		s.fail(w, http.StatusBadRequest, "bad_recipient")
-		return
-	}
-	_ = recipient
-	ident, err := s.approvedKey(r.Context(), p.OrgID, body.UserID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if body.Fingerprint != ident.Fingerprint {
-		s.fail(w, http.StatusBadRequest, "fingerprint_mismatch")
-		return
-	}
-	members, err := s.Q.ListVaultMembers(r.Context(), vaultID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	existing := 0
-	actorHas := false
-	for _, item := range members {
-		env, err := s.Q.GetEnvelope(r.Context(), db.GetEnvelopeParams{VaultID: vaultID, UserID: item.UserID, KeyVersion: vault.KeyVersion})
-		if err == nil && len(env.Ciphertext) > 0 {
-			existing++
-			if item.UserID == p.UserID {
-				actorHas = true
-			}
+	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
+		member, err := q.GetVaultMember(r.Context(), db.GetVaultMemberParams{VaultID: vaultID, UserID: p.UserID})
+		if err != nil || !authz.CanReadVault(member.Role) {
+			return errStatus(http.StatusNotFound, "not_found")
 		}
-	}
-	if existing > 0 && !actorHas {
-		s.fail(w, http.StatusForbidden, "vault_locked")
-		return
-	}
-	if existing == 0 && body.UserID != p.UserID {
-		s.fail(w, http.StatusForbidden, "owner_envelope_first")
-		return
-	}
-	if err := s.Q.UpsertEnvelope(r.Context(), db.UpsertEnvelopeParams{
-		VaultID: vaultID, UserID: body.UserID, KeyVersion: vault.KeyVersion,
-		RecipientFingerprint: ident.Fingerprint, Ciphertext: ciphertext, CreatedBy: p.UserID,
-	}); err != nil {
+		if !authz.CanAdminVault(member.Role) {
+			return errStatus(http.StatusForbidden, "forbidden")
+		}
+		if err := staleKey(body.ExpectedKeyVersion, vault); err != nil {
+			return err
+		}
+		if _, err := q.GetVaultMember(r.Context(), db.GetVaultMemberParams{VaultID: vaultID, UserID: body.UserID}); err != nil {
+			return errStatus(http.StatusBadRequest, "bad_recipient")
+		}
+		ident, err := approvedKeyQ(r.Context(), q, p.OrgID, body.UserID)
+		if err != nil {
+			return err
+		}
+		if body.Fingerprint != ident.Fingerprint {
+			return errStatus(http.StatusBadRequest, "fingerprint_mismatch")
+		}
+		// The first envelope of a vault is the owner's own and happens once.
+		// After that only a current key holder can share the key.
+		if !vault.Initialized {
+			if body.UserID != p.UserID {
+				return errStatus(http.StatusForbidden, "owner_envelope_first")
+			}
+			if err := q.MarkVaultInitialized(r.Context(), vaultID); err != nil {
+				return err
+			}
+		} else if !holdsKey(r.Context(), q, vault, p.UserID) {
+			return errStatus(http.StatusForbidden, "not_key_holder")
+		}
+		if err := q.UpsertEnvelope(r.Context(), db.UpsertEnvelopeParams{
+			VaultID: vaultID, UserID: body.UserID, KeyVersion: vault.KeyVersion,
+			RecipientFingerprint: ident.Fingerprint, Ciphertext: ciphertext, CreatedBy: p.UserID,
+		}); err != nil {
+			return err
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "envelope_written", "vault", vaultID.String(), map[string]string{"user_id": body.UserID.String()})
+	})
+	if err != nil {
 		s.sendError(w, err)
 		return
 	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "envelope_written", "vault", vaultID.String(), map[string]string{"user_id": body.UserID.String()})
 	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -333,7 +335,8 @@ func (s *Server) getEnvelope(w http.ResponseWriter, r *http.Request) {
 	}
 	env, err := s.Q.GetEnvelope(r.Context(), db.GetEnvelopeParams{VaultID: vaultID, UserID: p.UserID, KeyVersion: vault.KeyVersion})
 	if err != nil {
-		s.fail(w, http.StatusNotFound, "not_found")
+		// The caller is a member, so saying "no key yet" leaks nothing.
+		s.fail(w, http.StatusNotFound, "no_access")
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
@@ -342,18 +345,19 @@ func (s *Server) getEnvelope(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) requireItemAccess(ctx context.Context, p Principal, vaultID uuid.UUID, write bool) (db.Vault, db.VaultMember, error) {
-	vault, member, err := s.memberVault(ctx, p, vaultID)
-	if err != nil {
-		return vault, member, err
+// requireItemAccess checks membership, write role and a current envelope.
+func requireItemAccess(ctx context.Context, q *db.Queries, p Principal, vault db.Vault, write bool) error {
+	member, err := q.GetVaultMember(ctx, db.GetVaultMemberParams{VaultID: vault.ID, UserID: p.UserID})
+	if err != nil || !authz.CanReadVault(member.Role) {
+		return errStatus(http.StatusNotFound, "not_found")
 	}
 	if write && !authz.CanWriteVault(member.Role) {
-		return vault, member, errStatus(http.StatusForbidden, "forbidden")
+		return errStatus(http.StatusForbidden, "forbidden")
 	}
-	if _, err := s.Q.GetEnvelope(ctx, db.GetEnvelopeParams{VaultID: vaultID, UserID: p.UserID, KeyVersion: vault.KeyVersion}); err != nil {
-		return vault, member, errStatus(http.StatusForbidden, "vault_locked")
+	if !holdsKey(ctx, q, vault, p.UserID) {
+		return errStatus(http.StatusForbidden, "vault_locked")
 	}
-	return vault, member, nil
+	return nil
 }
 
 func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
@@ -363,8 +367,12 @@ func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	vault, _, err := s.requireItemAccess(r.Context(), p, vaultID, false)
+	vault, err := s.Q.GetVault(r.Context(), db.GetVaultParams{ID: vaultID, OrganizationID: p.OrgID})
 	if err != nil {
+		s.fail(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err := requireItemAccess(r.Context(), s.Q, p, vault, false); err != nil {
 		s.sendError(w, err)
 		return
 	}
@@ -379,11 +387,11 @@ func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out = append(out, map[string]any{
-			"id": row.ID, "key_version": row.KeyVersion,
+			"id": row.ID, "key_version": row.KeyVersion, "version": row.Version,
 			"nonce": encodeB64(row.Nonce), "ciphertext": encodeB64(row.Ciphertext),
 		})
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	s.writeJSON(w, http.StatusOK, map[string]any{"key_version": vault.KeyVersion, "items": out})
 }
 
 func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
@@ -393,24 +401,11 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	vault, _, err := s.requireItemAccess(r.Context(), p, vaultID, true)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	org, err := s.Q.GetOrganization(r.Context(), p.OrgID)
-	if err != nil || !org.RecoveryReady {
-		s.fail(w, http.StatusConflict, "recovery_not_ready")
-		return
-	}
-	if _, err := s.Q.GetRecoveryEnvelope(r.Context(), db.GetRecoveryEnvelopeParams{VaultID: vaultID, KeyVersion: vault.KeyVersion}); err != nil {
-		s.fail(w, http.StatusConflict, "recovery_envelope_missing")
-		return
-	}
 	var body struct {
-		ID         uuid.UUID `json:"id"`
-		Nonce      string    `json:"nonce"`
-		Ciphertext string    `json:"ciphertext"`
+		ID                 uuid.UUID `json:"id"`
+		Nonce              string    `json:"nonce"`
+		Ciphertext         string    `json:"ciphertext"`
+		ExpectedKeyVersion int32     `json:"expected_key_version"`
 	}
 	if !s.decode(w, r, &body) {
 		return
@@ -423,15 +418,34 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, "bad_item")
 		return
 	}
-	row, err := s.Q.InsertVaultItem(r.Context(), db.InsertVaultItemParams{
-		ID: body.ID, VaultID: vaultID, KeyVersion: vault.KeyVersion, Nonce: nonce, Ciphertext: ct, CreatedBy: p.UserID,
+	var row db.VaultItem
+	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
+		if err := requireItemAccess(r.Context(), q, p, vault, true); err != nil {
+			return err
+		}
+		if err := staleKey(body.ExpectedKeyVersion, vault); err != nil {
+			return err
+		}
+		org, err := q.GetOrganization(r.Context(), p.OrgID)
+		if err != nil || !org.RecoveryReady {
+			return errStatus(http.StatusConflict, "recovery_not_ready")
+		}
+		if _, err := q.GetRecoveryEnvelope(r.Context(), db.GetRecoveryEnvelopeParams{VaultID: vaultID, KeyVersion: vault.KeyVersion}); err != nil {
+			return errStatus(http.StatusConflict, "recovery_envelope_missing")
+		}
+		row, err = q.InsertVaultItem(r.Context(), db.InsertVaultItemParams{
+			ID: body.ID, VaultID: vaultID, KeyVersion: vault.KeyVersion, Nonce: nonce, Ciphertext: ct, CreatedBy: p.UserID,
+		})
+		if err != nil {
+			return err
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "vault_item_created", "vault_item", row.ID.String(), nil)
 	})
 	if err != nil {
 		s.sendError(w, err)
 		return
 	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "vault_item_created", "vault_item", row.ID.String(), nil)
-	s.writeJSON(w, http.StatusCreated, map[string]any{"id": row.ID})
+	s.writeJSON(w, http.StatusCreated, map[string]any{"id": row.ID, "version": row.Version})
 }
 
 func itemCipher(nonceRaw, ctRaw string) ([]byte, []byte, error) {
@@ -458,14 +472,11 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	vault, _, err := s.requireItemAccess(r.Context(), p, vaultID, true)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
 	var body struct {
-		Nonce      string `json:"nonce"`
-		Ciphertext string `json:"ciphertext"`
+		Nonce              string `json:"nonce"`
+		Ciphertext         string `json:"ciphertext"`
+		ExpectedKeyVersion int32  `json:"expected_key_version"`
+		Version            int32  `json:"version"`
 	}
 	if !s.decode(w, r, &body) {
 		return
@@ -475,14 +486,34 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, "bad_item")
 		return
 	}
-	if _, err := s.Q.UpdateVaultItem(r.Context(), db.UpdateVaultItemParams{
-		ID: itemID, VaultID: vaultID, Nonce: nonce, Ciphertext: ct, KeyVersion: vault.KeyVersion, UpdatedBy: p.UserID,
-	}); err != nil {
+	var row db.VaultItem
+	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
+		if err := requireItemAccess(r.Context(), q, p, vault, true); err != nil {
+			return err
+		}
+		if err := staleKey(body.ExpectedKeyVersion, vault); err != nil {
+			return err
+		}
+		row, err = q.UpdateVaultItem(r.Context(), db.UpdateVaultItemParams{
+			ID: itemID, VaultID: vaultID, Nonce: nonce, Ciphertext: ct, KeyVersion: vault.KeyVersion,
+			UpdatedBy: p.UserID, ExpectedVersion: body.Version,
+		})
+		if isNoRows(err) {
+			if _, getErr := q.GetVaultItem(r.Context(), db.GetVaultItemParams{ID: itemID, VaultID: vaultID}); getErr == nil {
+				return errStatus(http.StatusConflict, "item_conflict")
+			}
+			return errStatus(http.StatusNotFound, "not_found")
+		}
+		if err != nil {
+			return err
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "vault_item_updated", "vault_item", itemID.String(), nil)
+	})
+	if err != nil {
 		s.sendError(w, err)
 		return
 	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "vault_item_updated", "vault_item", itemID.String(), nil)
-	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": row.Version})
 }
 
 func (s *Server) deleteItem(w http.ResponseWriter, r *http.Request) {
@@ -497,16 +528,140 @@ func (s *Server) deleteItem(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	if _, _, err := s.requireItemAccess(r.Context(), p, vaultID, true); err != nil {
+	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
+		if err := requireItemAccess(r.Context(), q, p, vault, true); err != nil {
+			return err
+		}
+		if err := q.SoftDeleteVaultItem(r.Context(), db.SoftDeleteVaultItemParams{ID: itemID, VaultID: vaultID, UpdatedBy: p.UserID}); err != nil {
+			return err
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "vault_item_deleted", "vault_item", itemID.String(), nil)
+	})
+	if err != nil {
 		s.sendError(w, err)
 		return
 	}
-	if err := s.Q.SoftDeleteVaultItem(r.Context(), db.SoftDeleteVaultItemParams{ID: itemID, VaultID: vaultID, UpdatedBy: p.UserID}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "vault_item_deleted", "vault_item", itemID.String(), nil)
 	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+type rotationBody struct {
+	ExpectedVersion int32 `json:"expected_key_version"`
+	Items           []struct {
+		ID         uuid.UUID `json:"id"`
+		Version    int32     `json:"version"`
+		Nonce      string    `json:"nonce"`
+		Ciphertext string    `json:"ciphertext"`
+	} `json:"items"`
+	Envelopes []struct {
+		UserID      uuid.UUID `json:"user_id"`
+		Fingerprint string    `json:"fingerprint"`
+		Ciphertext  string    `json:"ciphertext"`
+	} `json:"envelopes"`
+	Recovery struct {
+		Nonce      string `json:"nonce"`
+		Ciphertext string `json:"ciphertext"`
+	} `json:"recovery"`
+}
+
+type preparedItem struct {
+	id      uuid.UUID
+	version int32
+	nonce   []byte
+	ct      []byte
+}
+
+type preparedRotation struct {
+	items    []preparedItem
+	envs     [][]byte
+	recNonce []byte
+	recCT    []byte
+}
+
+// validateRotation checks a rotation against the locked vault state:
+//
+//	key version   body.expected == vault.key_version            else 409 version_conflict
+//	items         same id set as the live items                  else 409 items_changed
+//	              same version per item                          else 409 item_conflict
+//	envelopes     exactly one per member, approved fingerprint   else 400
+//	recovery      org recovery_ready, 24-byte nonce, 48-byte box else 409 / 400
+func validateRotation(ctx context.Context, q *db.Queries, org uuid.UUID, vault db.Vault, body rotationBody) (preparedRotation, error) {
+	var out preparedRotation
+	if body.ExpectedVersion != vault.KeyVersion {
+		return out, errStatus(http.StatusConflict, "version_conflict")
+	}
+	live, err := q.ListVaultItems(ctx, vault.ID)
+	if err != nil {
+		return out, err
+	}
+	liveVersion := map[uuid.UUID]int32{}
+	for _, item := range live {
+		liveVersion[item.ID] = item.Version
+	}
+	if len(body.Items) != len(live) {
+		return out, errStatus(http.StatusConflict, "items_changed")
+	}
+	seen := map[uuid.UUID]bool{}
+	for _, item := range body.Items {
+		version, ok := liveVersion[item.ID]
+		if !ok || seen[item.ID] {
+			return out, errStatus(http.StatusConflict, "items_changed")
+		}
+		seen[item.ID] = true
+		if version != item.Version {
+			return out, errStatus(http.StatusConflict, "item_conflict")
+		}
+		nonce, ct, err := itemCipher(item.Nonce, item.Ciphertext)
+		if err != nil {
+			return out, errStatus(http.StatusBadRequest, "bad_item")
+		}
+		out.items = append(out.items, preparedItem{id: item.ID, version: item.Version, nonce: nonce, ct: ct})
+	}
+	members, err := q.ListVaultMembers(ctx, vault.ID)
+	if err != nil {
+		return out, err
+	}
+	if len(body.Envelopes) != len(members) {
+		return out, errStatus(http.StatusBadRequest, "envelope_set")
+	}
+	wanted := map[uuid.UUID]bool{}
+	for _, member := range members {
+		wanted[member.UserID] = true
+	}
+	envSeen := map[uuid.UUID]bool{}
+	for _, env := range body.Envelopes {
+		if envSeen[env.UserID] || !wanted[env.UserID] {
+			return out, errStatus(http.StatusBadRequest, "envelope_set")
+		}
+		envSeen[env.UserID] = true
+		ident, err := approvedKeyQ(ctx, q, org, env.UserID)
+		if err != nil || env.Fingerprint != ident.Fingerprint {
+			return out, errStatus(http.StatusBadRequest, "fingerprint_mismatch")
+		}
+		ct, err := decodeB64(env.Ciphertext, 0, 48, 8192)
+		if err != nil {
+			return out, errStatus(http.StatusBadRequest, "bad_envelope")
+		}
+		out.envs = append(out.envs, ct)
+	}
+	orgRow, err := q.GetOrganization(ctx, org)
+	if err != nil || !orgRow.RecoveryReady {
+		return out, errStatus(http.StatusConflict, "recovery_not_ready")
+	}
+	out.recNonce, out.recCT, err = recoveryBox(body.Recovery.Nonce, body.Recovery.Ciphertext)
+	return out, err
+}
+
+// recoveryBox decodes a secretbox of a 32-byte vault key: 24-byte nonce, 48-byte box.
+func recoveryBox(nonceRaw, ctRaw string) ([]byte, []byte, error) {
+	nonce, err := decodeB64(nonceRaw, 24, 0, 0)
+	if err != nil {
+		return nil, nil, errStatus(http.StatusBadRequest, "bad_envelope")
+	}
+	ct, err := decodeB64(ctRaw, 48, 0, 0)
+	if err != nil {
+		return nil, nil, errStatus(http.StatusBadRequest, "bad_envelope")
+	}
+	return nonce, ct, nil
 }
 
 func (s *Server) rotateVault(w http.ResponseWriter, r *http.Request) {
@@ -516,175 +671,68 @@ func (s *Server) rotateVault(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	_, member, err := s.memberVault(r.Context(), p, vaultID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if !authz.CanAdminVault(member.Role) {
-		s.fail(w, http.StatusForbidden, "forbidden")
-		return
-	}
-	var body struct {
-		ExpectedVersion int32 `json:"expected_key_version"`
-		Items           []struct {
-			ID         uuid.UUID `json:"id"`
-			Nonce      string    `json:"nonce"`
-			Ciphertext string    `json:"ciphertext"`
-		} `json:"items"`
-		Envelopes []struct {
-			UserID      uuid.UUID `json:"user_id"`
-			Fingerprint string    `json:"fingerprint"`
-			Ciphertext  string    `json:"ciphertext"`
-		} `json:"envelopes"`
-		Recovery struct {
-			Nonce      string `json:"nonce"`
-			Ciphertext string `json:"ciphertext"`
-		} `json:"recovery"`
-	}
+	var body rotationBody
 	if !s.decode(w, r, &body) {
 		return
 	}
-	members, err := s.Q.ListVaultMembers(r.Context(), vaultID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if len(body.Envelopes) != len(members) {
-		s.fail(w, http.StatusBadRequest, "envelope_set")
-		return
-	}
-	wanted := map[uuid.UUID]db.ListVaultMembersRow{}
-	for _, member := range members {
-		wanted[member.UserID] = member
-	}
-	seen := map[uuid.UUID]bool{}
-	for _, env := range body.Envelopes {
-		if seen[env.UserID] {
-			s.fail(w, http.StatusBadRequest, "envelope_set")
-			return
-		}
-		seen[env.UserID] = true
-		if _, ok := wanted[env.UserID]; !ok {
-			s.fail(w, http.StatusBadRequest, "envelope_set")
-			return
-		}
-		ident, err := s.approvedKey(r.Context(), p.OrgID, env.UserID)
-		if err != nil || env.Fingerprint != ident.Fingerprint {
-			s.fail(w, http.StatusBadRequest, "fingerprint_mismatch")
-			return
-		}
-	}
-	org, err := s.Q.GetOrganization(r.Context(), p.OrgID)
-	if err != nil || !org.RecoveryReady || body.Recovery.Nonce == "" {
-		s.fail(w, http.StatusConflict, "recovery_not_ready")
-		return
-	}
-	keep := make([]uuid.UUID, 0, len(body.Items))
-	itemSeen := map[uuid.UUID]bool{}
-	type preparedItem struct {
-		id    uuid.UUID
-		nonce []byte
-		ct    []byte
-	}
-	prepared := make([]preparedItem, 0, len(body.Items))
-	for _, item := range body.Items {
-		nonce, ct, err := itemCipher(item.Nonce, item.Ciphertext)
-		if err != nil {
-			s.fail(w, http.StatusBadRequest, "bad_item")
-			return
-		}
-		id := item.ID
-		if id == uuid.Nil {
-			id = uuid.New()
-		}
-		if itemSeen[id] {
-			s.fail(w, http.StatusBadRequest, "bad_item")
-			return
-		}
-		itemSeen[id] = true
-		keep = append(keep, id)
-		prepared = append(prepared, preparedItem{id: id, nonce: nonce, ct: ct})
-	}
-	tx, err := s.Pool.Begin(r.Context())
-	if err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	q := s.Q.WithTx(tx)
 	next := body.ExpectedVersion + 1
-	for _, item := range prepared {
-		// Update in place so service_accounts.vault_item_id survives. A delete
-		// would SET NULL that foreign key before the same id could be inserted.
-		row, err := q.UpsertVaultItem(r.Context(), db.UpsertVaultItemParams{
-			ID: item.id, VaultID: vaultID, KeyVersion: next, Nonce: item.nonce, Ciphertext: item.ct, CreatedBy: p.UserID,
-		})
-		if isNoRows(err) || (err == nil && row.ID != item.id) {
-			s.fail(w, http.StatusConflict, "item_conflict")
-			return
+	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
+		if err := requireKeyOwner(r.Context(), q, p, vault); err != nil {
+			return err
 		}
+		prepared, err := validateRotation(r.Context(), q, p.OrgID, vault, body)
 		if err != nil {
-			s.sendError(w, err)
-			return
+			return err
 		}
-	}
-	if len(keep) == 0 {
-		if err := q.DeleteVaultItems(r.Context(), vaultID); err != nil {
-			s.sendError(w, err)
-			return
+		keep := make([]uuid.UUID, 0, len(prepared.items))
+		for _, item := range prepared.items {
+			// Update in place so service_accounts.vault_item_id survives.
+			if _, err := q.RotateVaultItem(r.Context(), db.RotateVaultItemParams{
+				ID: item.id, VaultID: vaultID, KeyVersion: next, Nonce: item.nonce, Ciphertext: item.ct,
+				UpdatedBy: p.UserID, ExpectedVersion: item.version,
+			}); isNoRows(err) {
+				return errStatus(http.StatusConflict, "item_conflict")
+			} else if err != nil {
+				return err
+			}
+			keep = append(keep, item.id)
 		}
-	} else if err := q.DeleteVaultItemsExcept(r.Context(), db.DeleteVaultItemsExceptParams{VaultID: vaultID, KeepIds: keep}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if err := q.DeleteEnvelopesForVaultExceptVersion(r.Context(), db.DeleteEnvelopesForVaultExceptVersionParams{VaultID: vaultID, KeyVersion: next}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	for _, env := range body.Envelopes {
-		ct, err := decodeB64(env.Ciphertext, 0, 48, 8192)
-		if err != nil {
-			s.fail(w, http.StatusBadRequest, "bad_envelope")
-			return
+		// Soft-deleted rows were encrypted under the old key; drop them.
+		if len(keep) == 0 {
+			if err := q.DeleteVaultItems(r.Context(), vaultID); err != nil {
+				return err
+			}
+		} else if err := q.DeleteVaultItemsExcept(r.Context(), db.DeleteVaultItemsExceptParams{VaultID: vaultID, KeepIds: keep}); err != nil {
+			return err
 		}
-		if err := q.UpsertEnvelope(r.Context(), db.UpsertEnvelopeParams{
-			VaultID: vaultID, UserID: env.UserID, KeyVersion: next, RecipientFingerprint: env.Fingerprint,
-			Ciphertext: ct, CreatedBy: p.UserID,
+		if err := q.DeleteEnvelopesForVaultExceptVersion(r.Context(), db.DeleteEnvelopesForVaultExceptVersionParams{VaultID: vaultID, KeyVersion: next}); err != nil {
+			return err
+		}
+		for i, env := range body.Envelopes {
+			if err := q.UpsertEnvelope(r.Context(), db.UpsertEnvelopeParams{
+				VaultID: vaultID, UserID: env.UserID, KeyVersion: next, RecipientFingerprint: env.Fingerprint,
+				Ciphertext: prepared.envs[i], CreatedBy: p.UserID,
+			}); err != nil {
+				return err
+			}
+		}
+		if err := q.UpsertRecoveryEnvelope(r.Context(), db.UpsertRecoveryEnvelopeParams{
+			VaultID: vaultID, KeyVersion: next, Nonce: prepared.recNonce, Ciphertext: prepared.recCT,
 		}); err != nil {
-			s.sendError(w, err)
-			return
+			return err
 		}
-	}
-	nonce, err := decodeB64(body.Recovery.Nonce, 24, 0, 0)
+		if err := q.DeleteRecoveryEnvelopesExceptVersion(r.Context(), db.DeleteRecoveryEnvelopesExceptVersionParams{VaultID: vaultID, KeyVersion: next}); err != nil {
+			return err
+		}
+		if _, err := q.BumpVaultKeyVersion(r.Context(), db.BumpVaultKeyVersionParams{ID: vaultID, KeyVersion: body.ExpectedVersion}); err != nil {
+			return errStatus(http.StatusConflict, "version_conflict")
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "vault_rotated", "vault", vaultID.String(), nil)
+	})
 	if err != nil {
-		s.fail(w, http.StatusBadRequest, "bad_envelope")
-		return
-	}
-	ct, err := decodeB64(body.Recovery.Ciphertext, 0, 17, 8192)
-	if err != nil {
-		s.fail(w, http.StatusBadRequest, "bad_envelope")
-		return
-	}
-	if err := q.UpsertRecoveryEnvelope(r.Context(), db.UpsertRecoveryEnvelopeParams{
-		VaultID: vaultID, KeyVersion: next, Nonce: nonce, Ciphertext: ct,
-	}); err != nil {
 		s.sendError(w, err)
 		return
 	}
-	if err := q.DeleteRecoveryEnvelopesExceptVersion(r.Context(), db.DeleteRecoveryEnvelopesExceptVersionParams{VaultID: vaultID, KeyVersion: next}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if _, err := q.BumpVaultKeyVersion(r.Context(), db.BumpVaultKeyVersionParams{ID: vaultID, KeyVersion: body.ExpectedVersion}); err != nil {
-		s.fail(w, http.StatusConflict, "version_conflict")
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
-	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "vault_rotated", "vault", vaultID.String(), nil)
 	s.writeJSON(w, http.StatusOK, map[string]any{"key_version": next})
 }
 
@@ -805,39 +853,37 @@ func (s *Server) putRecoveryEnvelope(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	vault, member, err := s.memberVault(r.Context(), p, vaultID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if !authz.CanAdminVault(member.Role) {
-		s.fail(w, http.StatusForbidden, "forbidden")
-		return
-	}
 	var body struct {
-		Nonce      string `json:"nonce"`
-		Ciphertext string `json:"ciphertext"`
+		Nonce              string `json:"nonce"`
+		Ciphertext         string `json:"ciphertext"`
+		ExpectedKeyVersion int32  `json:"expected_key_version"`
 	}
 	if !s.decode(w, r, &body) {
 		return
 	}
-	nonce, err := decodeB64(body.Nonce, 24, 0, 0)
+	nonce, ct, err := recoveryBox(body.Nonce, body.Ciphertext)
 	if err != nil {
-		s.fail(w, http.StatusBadRequest, "bad_envelope")
-		return
-	}
-	ct, err := decodeB64(body.Ciphertext, 0, 17, 8192)
-	if err != nil {
-		s.fail(w, http.StatusBadRequest, "bad_envelope")
-		return
-	}
-	if err := s.Q.UpsertRecoveryEnvelope(r.Context(), db.UpsertRecoveryEnvelopeParams{
-		VaultID: vaultID, KeyVersion: vault.KeyVersion, Nonce: nonce, Ciphertext: ct,
-	}); err != nil {
 		s.sendError(w, err)
 		return
 	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "recovery_envelope_written", "vault", vaultID.String(), nil)
+	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
+		if err := requireKeyOwner(r.Context(), q, p, vault); err != nil {
+			return err
+		}
+		if err := staleKey(body.ExpectedKeyVersion, vault); err != nil {
+			return err
+		}
+		if err := q.UpsertRecoveryEnvelope(r.Context(), db.UpsertRecoveryEnvelopeParams{
+			VaultID: vaultID, KeyVersion: vault.KeyVersion, Nonce: nonce, Ciphertext: ct,
+		}); err != nil {
+			return err
+		}
+		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "recovery_envelope_written", "vault", vaultID.String(), nil)
+	})
+	if err != nil {
+		s.sendError(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

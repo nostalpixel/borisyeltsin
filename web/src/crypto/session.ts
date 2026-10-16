@@ -1,4 +1,4 @@
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import type { PublicKey, VaultInfo } from "../types";
 import {
   KDF_MEMLIMIT,
@@ -140,16 +140,24 @@ export async function writeOwnerEnvelope(keys: HeldKeys, userId: string, vaultId
     user_id: userId,
     fingerprint: keys.fingerprint,
     ciphertext: toB64(sealed),
+    expected_key_version: keyVersion,
   });
 }
 
+// ensureVault opens the vault the caller belongs to. It creates one only when
+// the organization has none yet; a vault the caller is not in is "no access",
+// never a reason to start a second vault.
 export async function ensureVault(name = "Services"): Promise<VaultInfo> {
   const listed = await api<{ vaults: VaultInfo[] }>("/api/v1/vaults");
+  const mine = listed.vaults.find((vault) => vault.role !== "");
+  if (mine) {
+    return mine;
+  }
   if (listed.vaults.length > 0) {
-    return listed.vaults[0];
+    throw new ApiError(404, "no_access");
   }
   const created = await api<{ id: string; name: string; key_version: number }>("/api/v1/vaults", "POST", { name });
-  return { id: created.id, name: created.name, key_version: created.key_version, rotation_required: false, role: "owner" };
+  return { id: created.id, name: created.name, key_version: created.key_version, rotation_required: false, role: "owner", initialized: false };
 }
 
 export async function newVaultKey(): Promise<Uint8Array> {
@@ -175,6 +183,7 @@ export async function enrollRecovery(first: CustodianChoice, second: CustodianCh
   await api(`/api/v1/vaults/${vault.id}/recovery-envelope`, "POST", {
     nonce: toB64(wrapped.nonce),
     ciphertext: toB64(wrapped.ciphertext),
+    expected_key_version: vault.key_version,
   });
   sodium.memzero(org);
   sodium.memzero(share1);
@@ -190,13 +199,21 @@ export async function myShare(keys: HeldKeys): Promise<string> {
   return text;
 }
 
-export async function loadPasswords(vault: VaultInfo, vaultKey: Uint8Array): Promise<Record<string, string>> {
+export type VaultItems = {
+  passwords: Record<string, string>;
+  // Item versions as last read. Edits send them back so a stale edit is refused.
+  versions: Record<string, number>;
+};
+
+type ItemRow = { id: string; key_version: number; version: number; nonce: string; ciphertext: string };
+
+export async function loadPasswords(vault: VaultInfo, vaultKey: Uint8Array): Promise<VaultItems> {
   await sodiumReady();
-  const listed = await api<{ items: { id: string; key_version: number; nonce: string; ciphertext: string }[] }>(
-    `/api/v1/vaults/${vault.id}/items`,
-  );
+  const listed = await api<{ items: ItemRow[] }>(`/api/v1/vaults/${vault.id}/items`);
   const out: Record<string, string> = {};
+  const versions: Record<string, number> = {};
   for (const item of listed.items) {
+    versions[item.id] = item.version;
     try {
       const plain = decryptItem(vault.id, item.id, item.key_version, vaultKey, {
         nonce: fromB64(item.nonce),
@@ -207,21 +224,28 @@ export async function loadPasswords(vault: VaultInfo, vaultKey: Uint8Array): Pro
       out[item.id] = "";
     }
   }
-  return out;
+  return { passwords: out, versions };
 }
 
-export async function savePassword(vault: VaultInfo, vaultKey: Uint8Array, accountId: string, itemId: string | null, password: string) {
+export async function savePassword(
+  vault: VaultInfo,
+  vaultKey: Uint8Array,
+  accountId: string,
+  itemId: string | null,
+  password: string,
+  version: number | undefined,
+): Promise<{ id: string; version: number }> {
   await sodiumReady();
   const id = itemId || crypto.randomUUID();
   const boxed = encryptItem(vault.id, id, vault.key_version, vaultKey, passwordRecord(password));
-  const body = { id, nonce: toB64(boxed.nonce), ciphertext: toB64(boxed.ciphertext) };
+  const body = { nonce: toB64(boxed.nonce), ciphertext: toB64(boxed.ciphertext), expected_key_version: vault.key_version };
   if (itemId) {
-    await api(`/api/v1/vaults/${vault.id}/items/${id}`, "PUT", { nonce: body.nonce, ciphertext: body.ciphertext });
-  } else {
-    await api(`/api/v1/vaults/${vault.id}/items`, "POST", body);
-    await api(`/api/v1/accounts/${accountId}/vault-link`, "POST", { vault_id: vault.id, vault_item_id: id });
+    const saved = await api<{ version: number }>(`/api/v1/vaults/${vault.id}/items/${id}`, "PUT", { ...body, version: version ?? 0 });
+    return { id, version: saved.version };
   }
-  return id;
+  const created = await api<{ version: number }>(`/api/v1/vaults/${vault.id}/items`, "POST", { id, ...body });
+  await api(`/api/v1/accounts/${accountId}/vault-link`, "POST", { vault_id: vault.id, vault_item_id: id });
+  return { id, version: created.version };
 }
 
 export async function rotateVault(vault: VaultInfo, vaultKey: Uint8Array, share1: string, share2: string) {
@@ -229,16 +253,14 @@ export async function rotateVault(vault: VaultInfo, vaultKey: Uint8Array, share1
   const org = combineShares(fromB64(share1), fromB64(share2));
   const nextKey = randomBytes(32);
   const nextVersion = vault.key_version + 1;
-  const listed = await api<{ items: { id: string; key_version: number; nonce: string; ciphertext: string }[] }>(
-    `/api/v1/vaults/${vault.id}/items`,
-  );
+  const listed = await api<{ items: ItemRow[] }>(`/api/v1/vaults/${vault.id}/items`);
   const items = listed.items.map((item) => {
     const plain = decryptItem(vault.id, item.id, item.key_version, vaultKey, {
       nonce: fromB64(item.nonce),
       ciphertext: fromB64(item.ciphertext),
     });
     const boxed = encryptItem(vault.id, item.id, nextVersion, nextKey, plain);
-    return { id: item.id, nonce: toB64(boxed.nonce), ciphertext: toB64(boxed.ciphertext) };
+    return { id: item.id, version: item.version, nonce: toB64(boxed.nonce), ciphertext: toB64(boxed.ciphertext) };
   });
   const detail = await api<{ members: { user_id: string }[] }>(`/api/v1/vaults/${vault.id}`);
   const keysList = await api<{ keys: PublicKey[] }>("/api/v1/crypto/keys");

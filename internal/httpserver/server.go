@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"io/fs"
@@ -18,6 +19,7 @@ import (
 	"github.com/nostalpixel/borisyeltsin/internal/db"
 	"github.com/nostalpixel/borisyeltsin/internal/fieldsafe"
 	"github.com/nostalpixel/borisyeltsin/internal/limiter"
+	"github.com/nostalpixel/borisyeltsin/internal/token"
 )
 
 //go:embed all:dist
@@ -220,12 +222,11 @@ func (s *Server) withSession(next http.Handler) http.Handler {
 			s.fail(w, http.StatusUnauthorized, "auth_required")
 			return
 		}
-		id, err := uuid.Parse(cookie.Value)
-		if err != nil {
+		if len(cookie.Value) < 32 || len(cookie.Value) > 128 {
 			s.fail(w, http.StatusUnauthorized, "auth_required")
 			return
 		}
-		row, err := s.Q.GetActiveSession(r.Context(), id)
+		row, err := s.Q.GetActiveSession(r.Context(), token.Hash(cookie.Value))
 		if err != nil {
 			s.fail(w, http.StatusUnauthorized, "auth_required")
 			return
@@ -263,7 +264,7 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 			return
 		}
 		p, ok := principalFrom(r)
-		if !ok || r.Header.Get("X-CSRF-Token") != p.CSRF {
+		if !ok || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(p.CSRF)) != 1 {
 			s.fail(w, http.StatusForbidden, "csrf")
 			return
 		}
@@ -289,7 +290,13 @@ func (s *Server) requireAdmin(p Principal) error {
 	return nil
 }
 
+// audit records an event outside any transaction. Writes that must not be
+// recorded unless they commit use auditTx with the transaction's queries.
 func (s *Server) audit(ctx context.Context, org uuid.UUID, actor *uuid.UUID, action, targetType, targetID string, meta map[string]string) {
+	_ = auditTx(ctx, s.Q, org, actor, action, targetType, targetID, meta)
+}
+
+func auditTx(ctx context.Context, q *db.Queries, org uuid.UUID, actor *uuid.UUID, action, targetType, targetID string, meta map[string]string) error {
 	raw := []byte(`{}`)
 	if len(meta) > 0 {
 		encoded, err := json.Marshal(meta)
@@ -300,7 +307,7 @@ func (s *Server) audit(ctx context.Context, org uuid.UUID, actor *uuid.UUID, act
 	if err := fieldsafe.RejectSecrets(raw); err != nil {
 		raw = []byte(`{"redacted":true}`)
 	}
-	_ = s.Q.InsertAuditEvent(ctx, db.InsertAuditEventParams{
+	return q.InsertAuditEvent(ctx, db.InsertAuditEventParams{
 		OrganizationID: org,
 		ActorID:        actor,
 		Action:         action,

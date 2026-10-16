@@ -15,9 +15,9 @@ This is the boundary of the vault, not a claim that the whole application is zer
 
 | Threat | What the code does |
 |---|---|
-| Stolen PostgreSQL backup | Vault payloads, private keys, and recovery shares are ciphertext. The backup still contains subscription metadata and public keys. |
+| Stolen PostgreSQL backup | Vault payloads, private keys, and recovery shares are ciphertext. Session cookies are stored as SHA-256 hashes, so a dump does not hand out live sessions. The backup still contains subscription metadata and public keys. |
 | Compromised API process | The process has no vault key and no passphrase. It can serve malicious JavaScript. See the boundary below. |
-| Malicious application admin | The admin role edits service metadata. It does not mint envelopes. Vault keys move only through client-side seals to approved public keys. |
+| Malicious application admin | The admin role edits service metadata. It does not mint envelopes and cannot add itself to a vault. Adding members, sharing the key, and rotating require a vault owner who holds an envelope for the current key. Vault keys move only through client-side seals to approved public keys. |
 | Stolen Authentik password | Login requires an `amr` value in the allow-list (`mfa`, `otp`, `totp`, `webauthn` by default). A session without that claim is rejected on every request. The vault passphrase is separate. |
 | Stolen unlocked device | The private key is in page memory after unlock. Logout zeroes that buffer. A thief who copies the ciphertext still needs the passphrase or the personal recovery key. |
 | Public-key substitution | A different active admin must approve a key. The sole bootstrap user may approve only their own key, and only while they are the only user. The client refuses to open an identity whose fingerprint does not match the approved public key. |
@@ -52,4 +52,4 @@ TLS is terminated by a reverse proxy in front of this process. Compose publishes
 
 `TRUST_PROXY` defaults to false. Turn it on only when a proxy you control sets `X-Forwarded-For`. It affects the rate-limit key, not authorization.
 
-`COOKIE_SECURE` defaults to true in the process and to false in the Compose example so a local HTTP port works. A deployment behind HTTPS must set `COOKIE_SECURE=true`.
+`COOKIE_SECURE` defaults to true in the process and in the Compose file. Set it to false only to try the app over plain `http://localhost`.

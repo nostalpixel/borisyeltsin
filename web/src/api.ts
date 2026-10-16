@@ -40,6 +40,15 @@ const messages: Record<string, string> = {
   envelope_mismatch: "This envelope belongs to a different vault.",
   key_not_approved: "The key is not approved yet.",
   bad_recovery_key: "The recovery key did not work.",
+  no_access: "This vault is not shared with you yet. Ask a vault owner to share it.",
+  not_key_holder: "Only an owner who holds the current vault key can do this. Unlock the vault first.",
+  last_vault_owner: "This person is the vault's only owner. Make another member an owner first.",
+  stale_key: "The vault key changed since you unlocked it. Lock and unlock the vault, then try again.",
+  item_conflict: "Someone else changed this password. Reload the vault, then make your change again.",
+  items_changed: "Passwords changed during the rotation. Reload the vault and rotate again.",
+  version_conflict: "The vault key was already rotated. Reload the vault.",
+  vault_busy: "The vault is busy. Try again in a moment.",
+  owner_envelope_first: "The vault owner has to unlock the vault once before sharing it.",
 };
 
 export function explain(error: unknown): string {

@@ -44,7 +44,7 @@ WHERE id = $1 AND organization_id = $2
 RETURNING *;
 
 -- name: CreateSession :one
-INSERT INTO sessions (id, user_id, csrf_secret, amr, expires_at)
+INSERT INTO sessions (token_hash, user_id, csrf_secret, amr, expires_at)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
@@ -53,7 +53,7 @@ SELECT s.id, s.user_id, s.csrf_secret, s.amr, s.expires_at,
        u.organization_id, u.email, u.display_name, u.role, u.status, u.issuer, u.subject
 FROM sessions s
 JOIN users u ON u.id = s.user_id
-WHERE s.id = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.status <> 'revoked';
+WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.status <> 'revoked';
 
 -- name: RevokeSession :exec
 UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL;
@@ -91,6 +91,13 @@ RETURNING *;
 UPDATE invitations SET revoked_at = now()
 WHERE id = $1 AND organization_id = $2 AND accepted_at IS NULL AND revoked_at IS NULL
 RETURNING *;
+
+-- name: RevokeOpenInvitations :exec
+UPDATE invitations SET revoked_at = now()
+WHERE organization_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL;
+
+-- name: LockBootstrap :exec
+SELECT pg_advisory_xact_lock(hashtext('borisyeltsin.bootstrap'));
 
 -- name: ListInvitations :many
 SELECT * FROM invitations WHERE organization_id = $1 ORDER BY created_at DESC;
@@ -189,6 +196,12 @@ SELECT * FROM vaults WHERE organization_id = $1 AND archived_at IS NULL ORDER BY
 -- name: GetVault :one
 SELECT * FROM vaults WHERE id = $1 AND organization_id = $2;
 
+-- name: LockVault :one
+SELECT * FROM vaults WHERE id = $1 AND organization_id = $2 FOR UPDATE;
+
+-- name: MarkVaultInitialized :exec
+UPDATE vaults SET initialized = true WHERE id = $1;
+
 -- name: SetVaultRotationRequired :exec
 UPDATE vaults SET rotation_required = $2 WHERE id = $1;
 
@@ -250,18 +263,16 @@ INSERT INTO vault_items (id, vault_id, key_version, nonce, ciphertext, created_b
 VALUES ($1, $2, $3, $4, $5, $6, $6)
 RETURNING *;
 
--- name: UpsertVaultItem :one
-INSERT INTO vault_items (id, vault_id, key_version, nonce, ciphertext, created_by, updated_by)
-VALUES ($1, $2, $3, $4, $5, $6, $6)
-ON CONFLICT (id) DO UPDATE SET
-    key_version = EXCLUDED.key_version,
-    nonce = EXCLUDED.nonce,
-    ciphertext = EXCLUDED.ciphertext,
-    updated_by = EXCLUDED.updated_by,
-    updated_at = now(),
-    deleted_at = NULL
-WHERE vault_items.vault_id = EXCLUDED.vault_id
+-- name: RotateVaultItem :one
+UPDATE vault_items
+SET key_version = sqlc.arg(key_version), nonce = sqlc.arg(nonce), ciphertext = sqlc.arg(ciphertext),
+    updated_by = sqlc.arg(updated_by), updated_at = now(), version = version + 1
+WHERE id = sqlc.arg(id) AND vault_id = sqlc.arg(vault_id) AND deleted_at IS NULL
+  AND version = sqlc.arg(expected_version)
 RETURNING *;
+
+-- name: GetVaultItem :one
+SELECT * FROM vault_items WHERE id = $1 AND vault_id = $2 AND deleted_at IS NULL;
 
 -- name: ListVaultItems :many
 SELECT * FROM vault_items WHERE vault_id = $1 AND deleted_at IS NULL ORDER BY created_at;
@@ -276,8 +287,10 @@ WHERE vault_id = sqlc.arg(vault_id)
 
 -- name: UpdateVaultItem :one
 UPDATE vault_items
-SET nonce = $3, ciphertext = $4, key_version = $5, updated_by = $6, updated_at = now()
-WHERE id = $1 AND vault_id = $2 AND deleted_at IS NULL
+SET nonce = sqlc.arg(nonce), ciphertext = sqlc.arg(ciphertext), key_version = sqlc.arg(key_version),
+    updated_by = sqlc.arg(updated_by), updated_at = now(), version = version + 1
+WHERE id = sqlc.arg(id) AND vault_id = sqlc.arg(vault_id) AND deleted_at IS NULL
+  AND version = sqlc.arg(expected_version)
 RETURNING *;
 
 -- name: SoftDeleteVaultItem :exec
