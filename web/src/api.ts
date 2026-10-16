@@ -39,6 +39,7 @@ const messages: Record<string, string> = {
   fingerprint_mismatch: "Отпечаток ключа не совпал.",
   envelope_mismatch: "Конверт относится к другому сейфу.",
   key_not_approved: "Ключ ещё не подтверждён.",
+  bad_recovery_key: "Ключ восстановления не подошёл.",
 };
 
 export function explain(error: unknown): string {

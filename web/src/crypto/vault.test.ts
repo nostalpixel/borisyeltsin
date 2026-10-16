@@ -45,6 +45,14 @@ describe("vault crypto", () => {
     expect(boxed.nonce.length).toBe(24);
   });
 
+  it("opens a private-key backup with a 32-byte recovery key", () => {
+    const pair = identityKeypair();
+    const recovery = sodium.randombytes_buf(sodium.crypto_secretbox_KEYBYTES);
+    const boxed = secretbox(pair.privateKey, recovery);
+    expect(toB64(secretboxOpen(boxed, recovery))).toBe(toB64(pair.privateKey));
+    expect(() => secretboxOpen(boxed, sodium.randombytes_buf(32))).toThrow();
+  });
+
   it("round-trips the production passphrase KEK once", () => {
     const salt = sodium.randombytes_buf(sodium.crypto_pwhash_SALTBYTES);
     const kek = passphraseKek("production-passphrase", salt);
