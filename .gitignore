@@ -218,3 +218,44 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local product spec (not part of the runtime tree)
+requirements/
+
+# BorisEltsyn — Go
+bin/
+/boriseltsyn
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+vendor/
+.gocache/
+
+# BorisEltsyn — Node, Vite, Tailwind
+node_modules/
+web/node_modules/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output. Placeholder web/dist/index.html is tracked.
+web/dist/*
+!web/dist/index.html
+
+# Secrets and local data
+secrets/
+*.pem
+*.key
+postgres-data/
+tmp/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
