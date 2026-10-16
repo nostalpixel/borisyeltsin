@@ -244,8 +244,8 @@ func validateService(body serviceBody) (serviceBody, error) {
 	body.Description = clip(body.Description, 200)
 	body.Notes = clip(body.Notes, 5000)
 	body.Logo = logoFrom(body.Name, body.Logo)
-	body.LogoBg = hexColor(body.LogoBg, "#eeeafc")
-	body.LogoFg = hexColor(body.LogoFg, "#7663c6")
+	body.LogoBg = hexColor(body.LogoBg, "#1a2238")
+	body.LogoFg = hexColor(body.LogoFg, "#f3e6cf")
 	if len(body.Tags) > 20 {
 		body.Tags = body.Tags[:20]
 	}
