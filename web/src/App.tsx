@@ -56,7 +56,7 @@ export function App() {
     const parsed = JSON.parse(await file.text()) as unknown;
     const { document, secrets } = splitBackup(parsed);
     if (secrets.length > 0 && (!open || !data?.organization.recovery_ready)) {
-      throw new Error("Откройте сейф и назначьте двух хранителей. Пароли не отправлены.");
+      throw new Error("Unlock the vault and assign two custodians. No passwords were sent.");
     }
     await api("/api/v1/imports/services", "POST", document);
     const fresh = await reloadWorkspace();
@@ -69,7 +69,7 @@ export function App() {
         return secretKey({ service: service.name, label: item.label, login: item.login_hint }) === secretKey(hit);
       });
       if (!account) {
-        throw new Error(`Не удалось привязать пароль аккаунта «${hit.label}». Метаданные уже импортированы.`);
+        throw new Error(`Could not link the password for account "${hit.label}". The metadata is already imported.`);
       }
       used.add(account.id);
       const { savePassword: storePassword } = await import("./crypto/session");
@@ -101,7 +101,7 @@ export function App() {
   if (!ready) {
     return (
       <div className="auth-wrap">
-        <p className="modal-hint">Загрузка…</p>
+        <p className="modal-hint">Loading…</p>
       </div>
     );
   }
@@ -119,23 +119,23 @@ export function App() {
     <div className="app">
       <aside className="side">
         <div className="brand">
-          <span className="brand-mark">▦</span> Сервисы
+          <span className="brand-mark">▦</span> Services
         </div>
         <div>
-          <div className="side-label">Рабочее пространство</div>
+          <div className="side-label">Workspace</div>
           {view === "services" && data && (
             <CategoryNav category={category} services={data.services} accounts={data.accounts} subscriptions={data.subscriptions} onPick={setCategory} />
           )}
           <div className="nav" style={{ marginTop: 18 }}>
             <button className={view === "services" ? "active" : ""} onClick={() => choose("services")}>
-              Сервисы
+              Services
             </button>
             <button className={view === "vault" ? "active" : ""} onClick={() => choose("vault")}>
-              Сейф
+              Vault
             </button>
             {user.role === "admin" && (
               <button className={view === "team" ? "active" : ""} onClick={() => choose("team")}>
-                Команда
+                Team
               </button>
             )}
           </div>
@@ -162,7 +162,7 @@ export function App() {
               });
             }}
           >
-            Выйти
+            Sign out
           </button>
         </div>
       </aside>
@@ -182,7 +182,7 @@ export function App() {
           />
         )}
         {view === "vault" && data && (
-          <Suspense fallback={<p className="content modal-hint">Загрузка сейфа…</p>}>
+          <Suspense fallback={<p className="content modal-hint">Loading vault…</p>}>
             <VaultPage
               userId={user.id}
               recoveryReady={data.organization.recovery_ready}
@@ -202,7 +202,7 @@ export function App() {
 
 function Login({ error }: { error: string | null }) {
   const [token, setToken] = useState("");
-  const [message, setMessage] = useState(error === "access_denied" ? "Доступ закрыт." : "");
+  const [message, setMessage] = useState(error === "access_denied" ? "Access denied." : "");
 
   return (
     <div className="auth-wrap">
@@ -220,14 +220,14 @@ function Login({ error }: { error: string | null }) {
         }}
       >
         <p className="eyebrow">BorisEltsyn</p>
-        <h1>Вход по приглашению</h1>
-        <p className="intro">Публичной регистрации нет. Второй фактор проверяет Authentik.</p>
+        <h1>Sign in with an invitation</h1>
+        <p className="intro">There is no public registration. Authentik checks the second factor.</p>
         {message && <div className="banner bad">{message}</div>}
         <label className="field">
-          <span>Токен приглашения</span>
-          <textarea value={token} onChange={(event) => setToken(event.target.value)} rows={3} placeholder="Вставьте токен, если входите впервые" />
+          <span>Invitation token</span>
+          <textarea value={token} onChange={(event) => setToken(event.target.value)} rows={3} placeholder="Paste the token if this is your first sign-in" />
         </label>
-        <button className="btn primary">Войти</button>
+        <button className="btn primary">Sign in</button>
       </form>
     </div>
   );
@@ -249,11 +249,11 @@ function Enroll({ onDone }: { onDone: () => Promise<void> }) {
         onSubmit={(event) => {
           event.preventDefault();
           if (passphrase.length < 12) {
-            setError("Парольная фраза должна быть не короче 12 символов.");
+            setError("The passphrase must be at least 12 characters.");
             return;
           }
           if (passphrase !== again) {
-            setError("Фразы не совпали.");
+            setError("The passphrases do not match.");
             return;
           }
           setBusy(true);
@@ -268,7 +268,7 @@ function Enroll({ onDone }: { onDone: () => Promise<void> }) {
               return;
             }
             if (!saved) {
-              setError("Сохраните ключ восстановления, затем продолжите.");
+              setError("Save the recovery key, then continue.");
               return;
             }
             const { fingerprint: _ignored, ...posted } = body;
@@ -280,28 +280,28 @@ function Enroll({ onDone }: { onDone: () => Promise<void> }) {
             .finally(() => setBusy(false));
         }}
       >
-        <p className="eyebrow">Ключ</p>
-        <h1>Создайте личный ключ</h1>
-        <p className="intro">Фраза не отправляется на сервер. Ключ восстановления личности показывается один раз.</p>
+        <p className="eyebrow">Key</p>
+        <h1>Create your personal key</h1>
+        <p className="intro">The passphrase never leaves this browser. Your personal recovery key is shown once.</p>
         {error && <div className="banner bad">{error}</div>}
         <label className="field">
-          <span>Парольная фраза</span>
+          <span>Passphrase</span>
           <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="new-password" required />
         </label>
         <label className="field">
-          <span>Повтор</span>
+          <span>Repeat</span>
           <input type="password" value={again} onChange={(event) => setAgain(event.target.value)} autoComplete="new-password" required />
         </label>
         {recovery && (
           <>
             <p className="secret-once">{recovery}</p>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} /> Я сохранил ключ восстановления личности
+              <input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} /> I saved my personal recovery key
             </label>
           </>
         )}
         <button className="btn primary" disabled={busy || (recovery !== "" && !saved)}>
-          {busy ? "Считаем ключ…" : recovery ? "Отправить ключ на подтверждение" : "Создать ключ"}
+          {busy ? "Deriving key…" : recovery ? "Submit key for approval" : "Create key"}
         </button>
       </form>
     </div>
@@ -313,9 +313,9 @@ function Pending({ user, onDone }: { user: SessionUser; onDone: () => Promise<vo
   return (
     <div className="auth-wrap">
       <div className="auth-card grid gap-4">
-        <p className="eyebrow">Подтверждение</p>
-        <h1>Ключ ждёт администратора</h1>
-        <p className="intro">Пока ключ не подтверждён, реестр закрыт. Если вы единственный администратор, подтвердите свой ключ.</p>
+        <p className="eyebrow">Approval</p>
+        <h1>Your key is waiting for an admin</h1>
+        <p className="intro">The ledger stays closed until your key is approved. If you are the only admin, approve your own key.</p>
         {error && <div className="banner bad">{error}</div>}
         {user.role === "admin" && (
           <button
@@ -326,7 +326,7 @@ function Pending({ user, onDone }: { user: SessionUser; onDone: () => Promise<vo
                 .catch((err) => setError(explain(err)));
             }}
           >
-            Подтвердить свой ключ
+            Approve my key
           </button>
         )}
       </div>

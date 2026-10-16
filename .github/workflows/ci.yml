@@ -34,6 +34,8 @@ jobs:
           tar -C /tmp -xzf /tmp/sqlc.tar.gz
           /tmp/sqlc generate
           git diff --exit-code
+      - name: Interface copy is English
+        run: "! grep -rnP '[\\x{0400}-\\x{04FF}]' web/src web/index.html internal/httpserver/dist/index.html"
       - name: Compose config
         run: POSTGRES_PASSWORD=ci docker compose config >/tmp/compose.resolved.yml
       - name: Go vulnerability check
