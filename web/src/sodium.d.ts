@@ -1,0 +1,4 @@
+declare module "libsodium-wrappers-sumo" {
+  import * as sodium from "libsodium-wrappers";
+  export default sodium;
+}
