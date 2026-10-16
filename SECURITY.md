@@ -4,7 +4,7 @@ BorisEltsyn encrypts vault payloads in the browser. It does not encrypt the subs
 
 ## Report a problem
 
-Open a private security advisory on `github.com/nostalpixel/boriseltsyn`, or email the maintainer if you cannot use advisories. Please include a reproduction and the version you built. Give the project time to fix a vulnerability before publishing it.
+Open a private security advisory on `github.com/nostalpixel/borisyeltsin`, or email the maintainer if you cannot use advisories. Please include a reproduction and the version you built. Give the project time to fix a vulnerability before publishing it.
 
 Do not include passphrases, recovery keys, or vault plaintext in the report.
 
