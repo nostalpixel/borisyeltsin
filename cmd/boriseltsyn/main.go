@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "time/tzdata"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nostalpixel/boriseltsyn/internal/config"
 	"github.com/nostalpixel/boriseltsyn/internal/db"
