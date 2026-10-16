@@ -82,7 +82,6 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
 
   return (
     <div className="content">
-      <p className="eyebrow">Vault</p>
       <h1>Team keys</h1>
       <p className="intro">The server stores only encrypted envelopes. Your passphrase and private key never leave this browser.</p>
       {error && <div className="banner bad">{error}</div>}

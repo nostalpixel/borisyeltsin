@@ -73,6 +73,7 @@ Generated sqlc code is committed. Regenerate with sqlc 1.30.0 and keep the diff 
 - [docs/RECOVERY.md](docs/RECOVERY.md) — personal key, two custodians, departure, and permanent loss
 - [docs/BACKUP.md](docs/BACKUP.md) — `pg_dump` and the secret-free export
 - [SECURITY.md](SECURITY.md) — reporting and the short limit list
+- [DESIGN.md](DESIGN.md) — theme tokens, type, retro budget, layout and accessibility rules
 
 ## Stack
 

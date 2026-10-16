@@ -51,7 +51,7 @@ export type WorkspaceData = {
   services: Service[];
   accounts: Account[];
   subscriptions: Subscription[];
-  alerts: { id: string; name: string; days_before: number; due_on: string; cost: string; currency: string }[];
+  alerts: { id: string; service_id: string; name: string; days_before: number; due_on: string; cost: string; currency: string }[];
   summary: { services: number; accounts: number; unclear: number; overdue: number; due_soon: number; monthly: Record<string, string> };
 };
 

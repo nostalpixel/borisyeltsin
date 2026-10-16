@@ -1,0 +1,173 @@
+/* Design tokens. DESIGN.md is the source; change it first. theme.test.ts checks contrast. */
+:root {
+  color-scheme: dark;
+  --bg: #0e1424;
+  --panel: #141b2e;
+  --panel-2: #1a2238;
+  --line: #5b6b90;
+  --line-soft: #26304a;
+  --text: #f3e6cf;
+  --muted: #a9b0c2;
+  --primary: #a9433a;
+  --primary-hover: #923629;
+  --alert: #f0665e;
+  --warn: #e0a93b;
+  --ok: #86c29a;
+  --focus: #e0a93b;
+
+  --font-brand: "Silkscreen", "JetBrains Mono", monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-prose: "IBM Plex Sans", sans-serif;
+
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --radius: 2px;
+
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  cursor: pointer;
+  border: 0;
+  background: none;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Browser surfaces carry the theme too. */
+::selection {
+  background: var(--primary);
+  color: var(--text);
+}
+input,
+textarea {
+  caret-color: var(--warn);
+}
+* {
+  scrollbar-color: var(--line) var(--bg);
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 0;
+}
+a {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 3px;
+}
+a:visited {
+  color: var(--muted);
+}
+
+.prose {
+  font-family: var(--font-prose);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+[hidden] {
+  display: none !important;
+}
+
+/* The wordmark is the only pixel type in the app. */
+.wordmark {
+  font-family: var(--font-brand);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  text-shadow: 2px 2px 0 var(--primary);
+  line-height: 1;
+  margin: 0;
+}
+.wordmark.small {
+  font-size: 20px;
+}
+.wordmark.large {
+  font-size: clamp(30px, 7vw, 56px);
+  text-shadow: 3px 3px 0 var(--primary);
+}
+.tagline {
+  color: var(--muted);
+  font-size: 14px;
+  margin: var(--s3) 0 0;
+}
+
+/* Status glyphs come with words, never alone. */
+.glyph {
+  display: inline-block;
+  margin-right: 0.5ch;
+}
+.warn-text {
+  color: var(--warn);
+}
+.alert-text {
+  color: var(--alert);
+}
+.ok-text {
+  color: var(--ok);
+}
+
+/* >_ status line. The cursor blinks for ~2 s after an action, steady otherwise. */
+.status-line {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+}
+.status-line .cursor {
+  display: inline-block;
+  width: 0.6em;
+  height: 1em;
+  vertical-align: text-bottom;
+  background: var(--muted);
+  margin-left: 2px;
+}
+.status-line.fresh .cursor {
+  animation: blink 0.5s steps(1) 4;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

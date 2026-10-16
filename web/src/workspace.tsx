@@ -62,8 +62,8 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
     <>
       <header className="topbar">
         <div className="crumb">
-          Workspace <span style={{ margin: "0 9px", color: "#c2c7d1" }}>/</span>
-          <b>Services and payments</b>
+          workspace<span className="sep">/</span>
+          <b>services</b>
         </div>
         <div className="top-actions">
           <a className="btn" href="/api/v1/exports/services.csv">
@@ -73,7 +73,7 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
             ↓ Excel
           </a>
           <label className="btn">
-            Backup
+            Import backup
             <input
               className="sr-only"
               type="file"
@@ -95,9 +95,8 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
       <div className="content">
         <div className="heading">
           <div>
-            <p className="eyebrow">Accounts · Subscriptions · Payments</p>
             <h1>{categories.find((item) => item[0] === category)?.[1]}</h1>
-            <p className="intro">Open a service to manage its accounts and payments. Passwords live only in the vault.</p>
+            <p className="stat-strip">{statLine(data)}</p>
           </div>
           {!readOnly && (
             <button className="btn primary" onClick={() => setEditing("new")}>
@@ -105,32 +104,25 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
             </button>
           )}
         </div>
-        <section className="metrics" aria-label="Overview">
-          <Metric label="Services" value={data.summary.services} />
-          <Metric label="Accounts" value={data.summary.accounts} />
-          <Metric label="Needs review" value={data.summary.unclear} amber />
-        </section>
         {data.alerts.length > 0 && (
           <div className="banner">
-            Reminders: {data.alerts.map((alert) => `${alert.name} in ${alert.days_before} d (${alert.due_on})`).join(" · ")}
+            {data.alerts
+              .map((alert) => {
+                const service = data.services.find((item) => item.id === alert.service_id);
+                return `${service?.name ?? alert.name} due ${alert.due_on} · ${alert.cost} ${alert.currency}`;
+              })
+              .join("  ·  ")}
           </div>
         )}
         {error && <div className="banner bad">{error}</div>}
-        {notice && <p className="modal-hint">{notice}</p>}
         <p className="payment-legend" aria-label="Payment highlighting">
-          <span>
-            <i />
-            4–7 days until payment
-          </span>
-          <span>
-            <i className="red" />3 days or less, including overdue
-          </span>
+          <span className="warn">4–7 days until payment</span>
+          <span className="alert">3 days or less, or overdue</span>
         </p>
         <div className="toolbar">
           <label className="search">
-            <span aria-hidden="true">⌕</span>
-            <span className="sr-only">Search services and accounts</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a service or account…" />
+            <span>Search</span>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="filter by service, host, login" />
           </label>
           <div className="filters">
             {[
@@ -144,10 +136,12 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
             ))}
           </div>
         </div>
+        <div className="ledger">
         <div className="list-head" aria-hidden="true">
           <span>Service</span>
-          <span>Accounts</span>
-          <span>Per month</span>
+          <span className="num">Accounts</span>
+          <span className="num">Cost / mo</span>
+          <span>Due</span>
           <span />
         </div>
         <div id="services">
@@ -169,17 +163,28 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
                         {service.name}
                         {(service.unclear || !service.url) && <span className="tag">Review</span>}
                       </span>
-                      <span className="service-sub">
-                        {hostOf(service.url) || service.description} · {accounts.length} acct.
-                      </span>
-                      {level && <span className="due-label">{dueLabel(dueDays ?? 0)}</span>}
+                      <span className="service-sub">{hostOf(service.url) || service.description}</span>
                     </span>
                   </span>
-                  <span className="account-count">{accounts.length} acct.</span>
-                  <span className={`monthly ${money(accounts, byService.subs) ? "" : "empty"}`} style={{ whiteSpace: "pre-line" }}>
-                    {money(accounts, byService.subs) || "Add a payment"}
+                  <span className="account-count num">{accounts.length}</span>
+                  <span className={`monthly num ${money(accounts, byService.subs) ? "" : "empty"}`}>
+                    {money(accounts, byService.subs) || "—"}
                   </span>
-                  <span className="chevron">›</span>
+                  <span className={`due-cell ${level ? "" : "none"}`}>
+                    {level ? (
+                      <>
+                        <span className="glyph" aria-hidden="true">
+                          {level === "danger" ? "▲" : "●"}
+                        </span>
+                        {dueLabel(dueDays ?? 0)}
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </span>
+                  <span className="chevron" aria-hidden="true">
+                    ›
+                  </span>
                 </button>
                 {opened && (
                   <div className="service-body">
@@ -237,11 +242,12 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
             );
           })}
         </div>
+        </div>
         <footer className="bottom">
           <span>
             Showing {found.length} of {data.services.length} services
           </span>
-          <span>Excel and CSV exports never contain passwords.</span>
+          <StatusLine text={notice || "exports never contain passwords"} />
         </footer>
       </div>
       {editing && (
@@ -296,17 +302,30 @@ export function CategoryNav(props: {
   );
 }
 
-function Metric({ label, value, amber }: { label: string; value: number; amber?: boolean }) {
+// statLine is the one-line summary under the title. Numbers, not tiles.
+function statLine(data: WorkspaceData): string {
+  const parts = [`${data.summary.services} services`, `${data.summary.accounts} accounts`];
+  for (const [currency, amount] of Object.entries(data.summary.monthly)) {
+    parts.push(`${amount} ${currency}/mo`);
+  }
+  if (data.summary.due_soon + data.summary.overdue > 0) parts.push(`${data.summary.due_soon + data.summary.overdue} due soon`);
+  if (data.summary.unclear > 0) parts.push(`${data.summary.unclear} need review`);
+  return parts.join("  ·  ");
+}
+
+// StatusLine is the terminal-style footer. Its cursor blinks briefly after a change.
+export function StatusLine({ text }: { text: string }) {
+  const [fresh, setFresh] = useState(false);
+  useEffect(() => {
+    setFresh(true);
+    const timer = window.setTimeout(() => setFresh(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [text]);
   return (
-    <div className="metric">
-      <div>
-        <small>{label}</small>
-        <div>
-          <strong>{value}</strong>
-        </div>
-      </div>
-      <span className={`metric-icon ${amber ? "amber" : ""}`}>{amber ? "?" : "▦"}</span>
-    </div>
+    <p className={`status-line ${fresh ? "fresh" : ""}`} role="status" aria-live="polite">
+      &gt; {text}
+      <span className="cursor" aria-hidden="true" />
+    </p>
   );
 }
 
