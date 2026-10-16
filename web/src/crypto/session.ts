@@ -143,7 +143,7 @@ export async function writeOwnerEnvelope(keys: HeldKeys, userId: string, vaultId
   });
 }
 
-export async function ensureVault(name = "Сервисы"): Promise<VaultInfo> {
+export async function ensureVault(name = "Services"): Promise<VaultInfo> {
   const listed = await api<{ vaults: VaultInfo[] }>("/api/v1/vaults");
   if (listed.vaults.length > 0) {
     return listed.vaults[0];

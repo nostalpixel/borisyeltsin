@@ -16,7 +16,7 @@ The interface shows the recovery key once, in standard base64. Store it outside 
 To unlock after a lost passphrase:
 
 1. Sign in through Authentik. The account still needs a valid session and an approved key.
-2. Open the vault page and choose "Открыть ключом восстановления".
+2. Open the vault page and choose "Unlock with recovery key".
 3. Paste the recovery key. The browser opens the second secretbox and checks the fingerprint of the approved public key. A mismatch wipes the private key and stops.
 
 This does not replace a rejected or revoked key. A new public key is a proposal and still needs a different admin to approve it.

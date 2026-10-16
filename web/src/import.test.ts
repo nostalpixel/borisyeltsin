@@ -8,14 +8,14 @@ describe("splitBackup", () => {
       services: [
         {
           name: "Zomro",
-          accounts: [{ label: "Аккаунт 1", login: "ops@example.com", password: "hunter2", cost: "12.5" }],
+          accounts: [{ label: "Account 1", login: "ops@example.com", password: "hunter2", cost: "12.5" }],
         },
       ],
     });
     const body = JSON.stringify(document);
     expect(body).not.toContain("hunter2");
     expect(body).not.toContain("password");
-    expect(secrets).toEqual([{ service: "Zomro", label: "Аккаунт 1", login: "ops@example.com", password: "hunter2" }]);
+    expect(secrets).toEqual([{ service: "Zomro", label: "Account 1", login: "ops@example.com", password: "hunter2" }]);
     expect(secretKey(secrets[0])).toContain("Zomro");
   });
 
@@ -30,6 +30,6 @@ describe("splitBackup", () => {
         version: 1,
         services: [{ name: "Chat", accounts: [{ label: "A", secret: "nope" }] }],
       }),
-    ).toThrow(/секрет/);
+    ).toThrow(/secret/);
   });
 });

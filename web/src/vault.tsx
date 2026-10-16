@@ -74,14 +74,14 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
     }
     const passwords = recoveryReady ? await loadPasswords(vault, vaultKey) : {};
     onOpen({ keys: held, vault, vaultKey, passwords });
-    setNotice(recoveryReady ? "Сейф открыт." : "Личный ключ открыт. Назначьте двух хранителей, чтобы записывать пароли.");
+    setNotice(recoveryReady ? "Vault unlocked." : "Personal key unlocked. Assign two custodians before saving passwords.");
   }
 
   return (
     <div className="content">
-      <p className="eyebrow">Сейф</p>
-      <h1>Ключи команды</h1>
-      <p className="intro">Сервер хранит только зашифрованные конверты. Парольная фраза и личный ключ не покидают браузер.</p>
+      <p className="eyebrow">Vault</p>
+      <h1>Team keys</h1>
+      <p className="intro">The server stores only encrypted envelopes. Your passphrase and private key never leave this browser.</p>
       {error && <div className="banner bad">{error}</div>}
       {notice && <p className="modal-hint">{notice}</p>}
       {!open && (
@@ -101,17 +101,17 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
         >
           {useRecovery ? (
             <label className="field">
-              <span>Ключ восстановления</span>
+              <span>Recovery key</span>
               <textarea value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} rows={3} autoComplete="off" required />
             </label>
           ) : (
             <label className="field">
-              <span>Парольная фраза</span>
+              <span>Passphrase</span>
               <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="current-password" required />
             </label>
           )}
           <button className="btn primary" disabled={busy}>
-            {busy ? "Открываем…" : "Открыть сейф"}
+            {busy ? "Unlocking…" : "Unlock vault"}
           </button>
           <button
             className="btn"
@@ -121,16 +121,16 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
               setError("");
             }}
           >
-            {useRecovery ? "Открыть парольной фразой" : "Открыть ключом восстановления"}
+            {useRecovery ? "Unlock with passphrase" : "Unlock with recovery key"}
           </button>
-          {useRecovery && <p className="modal-hint">Сброс пароля в Authentik этот ключ не заменяет. Ключ показывался один раз при создании.</p>}
+          {useRecovery && <p className="modal-hint">An Authentik password reset does not replace this key. It was shown once, when you created your key.</p>}
         </form>
       )}
       {open && (
         <div className="grid gap-4">
           <p className="modal-hint">
-            Сейф «{open.vault.name}», версия ключа {open.vault.key_version}. {recoveryReady ? "Восстановление готово." : "Восстановление ещё не назначено."}
-            {open.vault.rotation_required ? " Нужна смена ключа: у кого-то сменился публичный ключ." : ""}
+            Vault "{open.vault.name}", key version {open.vault.key_version}. {recoveryReady ? "Recovery is ready." : "Recovery is not set up yet."}
+            {open.vault.rotation_required ? " Key rotation needed: a member's public key changed." : ""}
           </p>
           {!recoveryReady && (
             <form
@@ -140,22 +140,22 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
                 const a = keys.find((item) => item.user_id === first);
                 const b = keys.find((item) => item.user_id === second);
                 if (!a || !b) {
-                  setError("Выберите двух разных участников с подтверждённым ключом.");
+                  setError("Choose two different members with approved keys.");
                   return;
                 }
                 run(async () => {
                   await enrollRecovery(a, b, open.vault, open.vaultKey);
-                  setNotice("Две доли восстановления запечатаны. Пароли можно сохранять.");
+                  setNotice("Both recovery shares are sealed. You can save passwords now.");
                   await onChanged();
                 });
               }}
             >
-              <h2>Два хранителя</h2>
-              <p className="modal-hint">Каждый получит одну долю. Вместе они восстанавливают ключ сейфа. По одной доле этого сделать нельзя.</p>
+              <h2>Two custodians</h2>
+              <p className="modal-hint">Each gets one share. Together they can recover the vault key. One share alone cannot.</p>
               <label className="field">
-                <span>Хранитель 1</span>
+                <span>Custodian 1</span>
                 <select value={first} onChange={(event) => setFirst(event.target.value)} required>
-                  <option value="">Выберите</option>
+                  <option value="">Choose</option>
                   {keys.map((item) => (
                     <option key={item.user_id} value={item.user_id}>
                       {item.display_name} · {item.email}
@@ -164,9 +164,9 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
                 </select>
               </label>
               <label className="field">
-                <span>Хранитель 2</span>
+                <span>Custodian 2</span>
                 <select value={second} onChange={(event) => setSecond(event.target.value)} required>
-                  <option value="">Выберите</option>
+                  <option value="">Choose</option>
                   {keys.map((item) => (
                     <option key={item.user_id} value={item.user_id}>
                       {item.display_name} · {item.email}
@@ -175,7 +175,7 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
                 </select>
               </label>
               <button className="btn primary" disabled={busy || keys.length < 2}>
-                {keys.length < 2 ? "Нужен второй участник с ключом" : "Назначить хранителей"}
+                {keys.length < 2 ? "A second member with a key is needed" : "Assign custodians"}
               </button>
             </form>
           )}
@@ -188,22 +188,22 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
                 })
               }
             >
-              Показать мою долю
+              Show my share
             </button>
             <button
               className="btn danger"
               onClick={() => {
                 onOpen(null);
                 setShareText("");
-                setNotice("Сейф закрыт в этой вкладке.");
+                setNotice("Vault locked in this tab.");
               }}
             >
-              Закрыть сейф
+              Lock vault
             </button>
           </div>
           {shareText && (
             <div>
-              <p className="modal-hint">Это секрет. Передайте его второму хранителю только когда вы вместе восстанавливаете сейф.</p>
+              <p className="modal-hint">This is a secret. Give it to the other custodian only while you are recovering the vault together.</p>
               <p className="secret-once">{shareText}</p>
             </div>
           )}
@@ -217,23 +217,23 @@ export function VaultPage({ userId, recoveryReady, open, onOpen, onChanged }: Pr
                 onOpen({ ...open, vault: { ...open.vault, key_version: next.keyVersion, rotation_required: false }, vaultKey: next.vaultKey, passwords });
                 setShare1("");
                 setShare2("");
-                setNotice("Ключ сейфа сменён. Старые конверты удалены.");
+                setNotice("Vault key rotated. Old envelopes were deleted.");
                 await onChanged();
               });
             }}
           >
-            <h2>Сменить ключ сейфа</h2>
-            <p className="modal-hint">Нужны обе доли восстановления. Они снова запечатывают новый ключ и не отправляются открытыми.</p>
+            <h2>Rotate the vault key</h2>
+            <p className="modal-hint">Both recovery shares are needed. They re-seal the new key and are never sent in the clear.</p>
             <label className="field">
-              <span>Доля 1</span>
+              <span>Share 1</span>
               <textarea value={share1} onChange={(event) => setShare1(event.target.value)} rows={3} />
             </label>
             <label className="field">
-              <span>Доля 2</span>
+              <span>Share 2</span>
               <textarea value={share2} onChange={(event) => setShare2(event.target.value)} rows={3} />
             </label>
             <button className="btn primary" disabled={busy}>
-              Сменить ключ
+              Rotate key
             </button>
           </form>
         </div>

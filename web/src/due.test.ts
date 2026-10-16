@@ -10,9 +10,9 @@ describe("due paint", () => {
     expect(dueLevel(0)).toBe("danger");
     expect(dueLevel(-2)).toBe("danger");
     expect(dueLevel(8)).toBe("");
-    expect(dueLabel(-2)).toBe("Просрочено на 2 дн.");
-    expect(dueLabel(0)).toBe("Оплата сегодня");
-    expect(dueLabel(5)).toBe("Оплата через 5 дн.");
+    expect(dueLabel(-2)).toBe("Overdue by 2 d");
+    expect(dueLabel(0)).toBe("Due today");
+    expect(dueLabel(5)).toBe("Due in 5 d");
     expect(daysUntil("2026-02-31", "2026-02-01")).toBeNull();
   });
 });
