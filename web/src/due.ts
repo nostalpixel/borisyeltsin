@@ -12,7 +12,7 @@ export function dueLevel(days: number | null): "" | "warning" | "danger" {
 }
 
 export function dueLabel(days: number): string {
-  if (days < 0) return `Просрочено на ${Math.abs(days)} дн.`;
-  if (days === 0) return "Оплата сегодня";
-  return `Оплата через ${days} дн.`;
+  if (days < 0) return `Overdue by ${Math.abs(days)} d`;
+  if (days === 0) return "Due today";
+  return `Due in ${days} d`;
 }

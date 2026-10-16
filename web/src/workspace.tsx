@@ -44,8 +44,8 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
     if (filter === "due" && !accounts.some((account) => dueOf(byService.subs.get(account.id)).level)) return false;
     const hay = [service.name, service.url, service.description, ...accounts.flatMap((account) => [account.label, account.login_hint, account.notes, account.card_label])]
       .join(" ")
-      .toLocaleLowerCase("ru");
-    return hay.includes(query.toLocaleLowerCase("ru"));
+      .toLocaleLowerCase();
+    return hay.includes(query.toLocaleLowerCase());
   });
 
   async function run(action: () => Promise<void>) {
@@ -62,8 +62,8 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
     <>
       <header className="topbar">
         <div className="crumb">
-          Рабочее пространство <span style={{ margin: "0 9px", color: "#c2c7d1" }}>/</span>
-          <b>Сервисы и оплаты</b>
+          Workspace <span style={{ margin: "0 9px", color: "#c2c7d1" }}>/</span>
+          <b>Services and payments</b>
         </div>
         <div className="top-actions">
           <a className="btn" href="/api/v1/exports/services.csv">
@@ -73,7 +73,7 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
             ↓ Excel
           </a>
           <label className="btn">
-            Резервная копия
+            Backup
             <input
               className="sr-only"
               type="file"
@@ -84,7 +84,7 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
                 if (!file) return;
                 setError("");
                 onImport(file).then(
-                  () => setNotice("Копия импортирована. Пароли не записаны в базу открытым текстом."),
+                  () => setNotice("Backup imported. No password was written to the database in plaintext."),
                   (err) => setError(explain(err)),
                 );
               }}
@@ -95,48 +95,48 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
       <div className="content">
         <div className="heading">
           <div>
-            <p className="eyebrow">Аккаунты · Подписки · Платежи</p>
+            <p className="eyebrow">Accounts · Subscriptions · Payments</p>
             <h1>{categories.find((item) => item[0] === category)?.[1]}</h1>
-            <p className="intro">Откройте сервис, чтобы управлять аккаунтами и оплатами. Пароли живут только в сейфе.</p>
+            <p className="intro">Open a service to manage its accounts and payments. Passwords live only in the vault.</p>
           </div>
           {!readOnly && (
             <button className="btn primary" onClick={() => setEditing("new")}>
-              ＋ Добавить сервис
+              ＋ Add service
             </button>
           )}
         </div>
-        <section className="metrics" aria-label="Обзор">
-          <Metric label="Сервисов" value={data.summary.services} />
-          <Metric label="Аккаунтов" value={data.summary.accounts} />
-          <Metric label="Нужно уточнить" value={data.summary.unclear} amber />
+        <section className="metrics" aria-label="Overview">
+          <Metric label="Services" value={data.summary.services} />
+          <Metric label="Accounts" value={data.summary.accounts} />
+          <Metric label="Needs review" value={data.summary.unclear} amber />
         </section>
         {data.alerts.length > 0 && (
           <div className="banner">
-            Напоминания: {data.alerts.map((alert) => `${alert.name} за ${alert.days_before} дн. (${alert.due_on})`).join(" · ")}
+            Reminders: {data.alerts.map((alert) => `${alert.name} in ${alert.days_before} d (${alert.due_on})`).join(" · ")}
           </div>
         )}
         {error && <div className="banner bad">{error}</div>}
         {notice && <p className="modal-hint">{notice}</p>}
-        <p className="payment-legend" aria-label="Подсветка оплаты">
+        <p className="payment-legend" aria-label="Payment highlighting">
           <span>
             <i />
-            4–7 дней до оплаты
+            4–7 days until payment
           </span>
           <span>
-            <i className="red" />3 дня и меньше, включая просрочку
+            <i className="red" />3 days or less, including overdue
           </span>
         </p>
         <div className="toolbar">
           <label className="search">
             <span aria-hidden="true">⌕</span>
-            <span className="sr-only">Поиск сервисов и аккаунтов</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти сервис или аккаунт…" />
+            <span className="sr-only">Search services and accounts</span>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a service or account…" />
           </label>
           <div className="filters">
             {[
-              ["all", "Все"],
-              ["unclear", "Требуют уточнения"],
-              ["due", "Оплата в ближайшие 7 дней"],
+              ["all", "All"],
+              ["unclear", "Needs review"],
+              ["due", "Due in the next 7 days"],
             ].map(([id, label]) => (
               <button key={id} className={filter === id ? "filter active" : "filter"} onClick={() => setFilter(id)}>
                 {label}
@@ -145,13 +145,13 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
           </div>
         </div>
         <div className="list-head" aria-hidden="true">
-          <span>Сервис</span>
-          <span>Аккаунты</span>
-          <span>В месяц</span>
+          <span>Service</span>
+          <span>Accounts</span>
+          <span>Per month</span>
           <span />
         </div>
         <div id="services">
-          {found.length === 0 && <div className="empty-state">Сервисы не найдены. Попробуйте другой поиск или фильтр.</div>}
+          {found.length === 0 && <div className="empty-state">No services found. Try another search or filter.</div>}
           {found.map((service) => {
             const accounts = byService.accounts.get(service.id) ?? [];
             const dueDays = nearestDue(accounts, byService.subs);
@@ -167,17 +167,17 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
                     <span>
                       <span className="service-name">
                         {service.name}
-                        {(service.unclear || !service.url) && <span className="tag">Уточнить</span>}
+                        {(service.unclear || !service.url) && <span className="tag">Review</span>}
                       </span>
                       <span className="service-sub">
-                        {hostOf(service.url) || service.description} · {accounts.length} акк.
+                        {hostOf(service.url) || service.description} · {accounts.length} acct.
                       </span>
                       {level && <span className="due-label">{dueLabel(dueDays ?? 0)}</span>}
                     </span>
                   </span>
-                  <span className="account-count">{accounts.length} акк.</span>
+                  <span className="account-count">{accounts.length} acct.</span>
                   <span className={`monthly ${money(accounts, byService.subs) ? "" : "empty"}`} style={{ whiteSpace: "pre-line" }}>
-                    {money(accounts, byService.subs) || "Добавьте оплату"}
+                    {money(accounts, byService.subs) || "Add a payment"}
                   </span>
                   <span className="chevron">›</span>
                 </button>
@@ -187,19 +187,19 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
                       <div>
                         {service.url ? (
                           <a className="btn" href={service.url} target="_blank" rel="noopener noreferrer">
-                            Открыть сайт ↗
+                            Open site ↗
                           </a>
                         ) : (
-                          <span className="modal-hint">Название и сайт нужно уточнить</span>
+                          <span className="modal-hint">Name and site need review</span>
                         )}
                       </div>
                       {!readOnly && (
                         <div className="service-tools-right">
                           <button className="btn subtle" onClick={() => setEditing(service)}>
-                            Изменить сервис
+                            Edit service
                           </button>
                           <button className="btn subtle danger" onClick={() => run(() => api(`/api/v1/services/${service.id}/archive`, "POST", {}))}>
-                            В архив
+                            Archive
                           </button>
                         </div>
                       )}
@@ -220,15 +220,15 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
                               await onSavePassword(account, password);
                             }
                             await onReload();
-                            setNotice("Аккаунт сохранён.");
+                            setNotice("Account saved.");
                           }}
                           onDelete={() => run(() => api(`/api/v1/accounts/${account.id}`, "DELETE", {}))}
                         />
                       ))}
                     </div>
                     {!readOnly && (
-                      <button className="add-account" onClick={() => run(() => api(`/api/v1/services/${service.id}/accounts`, "POST", { label: `Аккаунт ${accounts.length + 1}` }))}>
-                        ＋ Добавить аккаунт
+                      <button className="add-account" onClick={() => run(() => api(`/api/v1/services/${service.id}/accounts`, "POST", { label: `Account ${accounts.length + 1}` }))}>
+                        ＋ Add account
                       </button>
                     )}
                   </div>
@@ -239,9 +239,9 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
         </div>
         <footer className="bottom">
           <span>
-            Показано {found.length} из {data.services.length} сервисов
+            Showing {found.length} of {data.services.length} services
           </span>
-          <span>Excel и CSV не содержат паролей.</span>
+          <span>Excel and CSV exports never contain passwords.</span>
         </footer>
       </div>
       {editing && (
@@ -279,7 +279,7 @@ export function CategoryNav(props: {
     if (sub.account_id) subs.set(sub.account_id, sub);
   }
   return (
-    <nav className="nav" aria-label="Категории">
+    <nav className="nav" aria-label="Categories">
       {categories.map(([id, label, symbol]) => {
         const rows = id === "all" ? props.services : props.services.filter((service) => service.category === id);
         const due = nearestDue(rows.flatMap((service) => accounts.get(service.id) ?? []), subs);
@@ -335,7 +335,7 @@ function money(accounts: Account[], subs: Map<string, Subscription>): string {
     sums[sub.currency] = (sums[sub.currency] ?? 0) + amount;
   }
   return Object.entries(sums)
-    .map(([currency, amount]) => `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(amount)} ${currency}`)
+    .map(([currency, amount]) => `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(amount)} ${currency}`)
     .join("\n");
 }
 
@@ -398,37 +398,37 @@ function AccountEditor({
         <div className="account-top">
           <div className="account-title">
             <span className="account-number">{String(index + 1).padStart(2, "0")}</span>
-            <input className="account-label" name="label" aria-label={`Название аккаунта ${index + 1}`} defaultValue={account.label} maxLength={80} disabled={readOnly} />
+            <input className="account-label" name="label" aria-label={`Account name ${index + 1}`} defaultValue={account.label} maxLength={80} disabled={readOnly} />
           </div>
           {!readOnly && (
             <button type="button" className="btn subtle danger" onClick={onDelete}>
-              Удалить
+              Delete
             </button>
           )}
         </div>
         <div className="fields">
           <label className="field">
-            <span>Логин / email</span>
-            <input name="login_hint" defaultValue={account.login_hint} placeholder="Введите логин или email" disabled={readOnly} autoComplete="off" />
+            <span>Login / email</span>
+            <input name="login_hint" defaultValue={account.login_hint} placeholder="Enter a login or email" disabled={readOnly} autoComplete="off" />
           </label>
           <label className="field">
-            <span>Пароль / ссылка на доступ</span>
+            <span>Password / access link</span>
             <span className="password">
-              <input name="password" type={show ? "text" : "password"} defaultValue={password} placeholder={canStore ? "Введите пароль" : "Сначала откройте сейф"} disabled={readOnly || !canStore} autoComplete="new-password" />
+              <input name="password" type={show ? "text" : "password"} defaultValue={password} placeholder={canStore ? "Enter a password" : "Unlock the vault first"} disabled={readOnly || !canStore} autoComplete="new-password" />
               <button type="button" onClick={() => setShow(!show)}>
-                {show ? "Скрыть" : "Показать"}
+                {show ? "Hide" : "Show"}
               </button>
             </span>
           </label>
           <label className="field">
-            <span>Способ оплаты / карта</span>
-            <input name="card_label" defaultValue={account.card_label} placeholder="Название карты, последние 4 цифры" disabled={readOnly} />
+            <span>Payment method / card</span>
+            <input name="card_label" defaultValue={account.card_label} placeholder="Card name, last 4 digits" disabled={readOnly} />
           </label>
           <label className="field">
-            <span>Стоимость</span>
+            <span>Cost</span>
             <span className="cost">
               <input name="cost" defaultValue={sub?.cost ?? ""} inputMode="decimal" placeholder="0.00" disabled={readOnly} />
-              <select name="currency" defaultValue={sub?.currency ?? "USD"} aria-label="Валюта" disabled={readOnly}>
+              <select name="currency" defaultValue={sub?.currency ?? "USD"} aria-label="Currency" disabled={readOnly}>
                 {currencies.map((currency) => (
                   <option key={currency}>{currency}</option>
                 ))}
@@ -436,7 +436,7 @@ function AccountEditor({
             </span>
           </label>
           <label className="field">
-            <span>Период</span>
+            <span>Billing cycle</span>
             <select name="billing_cycle" defaultValue={sub?.billing_cycle ?? "monthly"} disabled={readOnly}>
               {cycles.map(([id, label]) => (
                 <option key={id} value={id}>
@@ -446,28 +446,28 @@ function AccountEditor({
             </select>
           </label>
           <label className="field">
-            <span>Ближайшая дата оплаты</span>
+            <span>Next payment date</span>
             <input name="renewal_date" type="date" defaultValue={sub?.renewal_date ?? ""} disabled={readOnly} />
             {due.level && <small className={`date-hint due-${due.level}`}>{dueLabel(due.days ?? 0)}</small>}
           </label>
           <label className="field">
-            <span>Свой интервал, дни</span>
+            <span>Custom interval, days</span>
             <input name="custom_interval_days" type="number" min={1} defaultValue={sub?.custom_interval_days ?? ""} disabled={readOnly} />
           </label>
           <label className="field notes">
-            <span>Заметки</span>
-            <input name="notes" defaultValue={account.notes} placeholder="Тариф, владелец, комментарий" disabled={readOnly} />
+            <span>Notes</span>
+            <input name="notes" defaultValue={account.notes} placeholder="Plan, owner, comment" disabled={readOnly} />
           </label>
         </div>
         {!readOnly && (
           <div className="modal-actions">
             <button className="btn primary" type="submit">
-              Сохранить аккаунт
+              Save account
             </button>
           </div>
         )}
         {error && <p className="import-error">{error}</p>}
-        {!canStore && <p className="modal-hint">Пароль не отправляется на сервер, пока сейф не открыт и не готово восстановление.</p>}
+        {!canStore && <p className="modal-hint">Passwords are not sent until the vault is unlocked and recovery is set up.</p>}
       </form>
     </article>
   );
@@ -506,17 +506,17 @@ function ServiceDialog({
           }).catch((err) => setError(explain(err)));
         }}
       >
-        <h2>{service ? "Настройки сервиса" : "Новый сервис"}</h2>
+        <h2>{service ? "Service settings" : "New service"}</h2>
         <label className="field">
-          <span>Название</span>
-          <input name="name" required maxLength={160} defaultValue={service?.name ?? ""} placeholder="Например, ChatGPT" />
+          <span>Name</span>
+          <input name="name" required maxLength={160} defaultValue={service?.name ?? ""} placeholder="For example, ChatGPT" />
         </label>
         <label className="field">
-          <span>Сайт</span>
+          <span>Website</span>
           <input name="url" type="url" defaultValue={service?.url ?? ""} placeholder="https://example.com" />
         </label>
         <label className="field">
-          <span>Категория</span>
+          <span>Category</span>
           <select name="category" defaultValue={service?.category ?? (category === "all" ? "tools" : category)}>
             {categories.slice(1).map(([id, label]) => (
               <option key={id} value={id}>
@@ -526,19 +526,19 @@ function ServiceDialog({
           </select>
         </label>
         <label className="field">
-          <span>Заметка о сервисе</span>
+          <span>Service note</span>
           <input name="description" maxLength={200} defaultValue={service?.description ?? ""} />
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <input name="unclear" type="checkbox" defaultChecked={service?.unclear ?? false} /> Нужно уточнить
+          <input name="unclear" type="checkbox" defaultChecked={service?.unclear ?? false} /> Needs review
         </label>
         {error && <p className="import-error">{error}</p>}
         <div className="modal-actions">
           <button type="button" className="btn" onClick={onClose}>
-            Отмена
+            Cancel
           </button>
           <button className="btn primary" type="submit">
-            Сохранить
+            Save
           </button>
         </div>
       </form>

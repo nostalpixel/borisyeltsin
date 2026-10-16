@@ -47,13 +47,13 @@ export function TeamPage({ selfId }: { selfId: string }) {
 
   return (
     <div className="content">
-      <p className="eyebrow">Команда</p>
-      <h1>Люди и приглашения</h1>
-      <p className="intro">Регистрации нет. Приглашение живёт 24 часа, срабатывает один раз и привязано к issuer и subject в Authentik.</p>
+      <p className="eyebrow">Team</p>
+      <h1>People and invitations</h1>
+      <p className="intro">There is no self-registration. An invitation lasts 24 hours, works once, and is bound to an Authentik issuer and subject.</p>
       {error && <div className="banner bad">{error}</div>}
       {token && (
         <div className="banner">
-          Токен показывается один раз. Передайте его человеку лично.
+          The token is shown once. Hand it to the person directly.
           <p className="secret-once">{token}</p>
         </div>
       )}
@@ -69,7 +69,7 @@ export function TeamPage({ selfId }: { selfId: string }) {
           });
         }}
       >
-        <h2>Приглашение</h2>
+        <h2>Invitation</h2>
         <label className="field">
           <span>Issuer</span>
           <input value={issuer} onChange={(event) => setIssuer(event.target.value)} required placeholder="https://authentik.example/application/o/boris/" />
@@ -79,19 +79,19 @@ export function TeamPage({ selfId }: { selfId: string }) {
           <input value={subject} onChange={(event) => setSubject(event.target.value)} required />
         </label>
         <label className="field">
-          <span>Почта для карточки</span>
+          <span>Email for the profile</span>
           <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
         </label>
         <label className="field">
-          <span>Роль</span>
+          <span>Role</span>
           <select value={role} onChange={(event) => setRole(event.target.value)}>
-            <option value="admin">Администратор</option>
-            <option value="manager">Менеджер</option>
-            <option value="member">Участник</option>
-            <option value="readonly">Только просмотр</option>
+            <option value="admin">Admin</option>
+            <option value="manager">Manager</option>
+            <option value="member">Member</option>
+            <option value="readonly">Read-only</option>
           </select>
         </label>
-        <button className="btn primary">Создать приглашение</button>
+        <button className="btn primary">Create invitation</button>
       </form>
       <div className="accounts" style={{ marginTop: 18 }}>
         {users.map((user) => (
@@ -105,28 +105,28 @@ export function TeamPage({ selfId }: { selfId: string }) {
               </div>
               {user.id !== selfId && user.status !== "revoked" && (
                 <button className="btn subtle danger" onClick={() => run(() => api(`/api/v1/users/${user.id}/revoke`, "POST", {}))}>
-                  Отозвать
+                  Revoke
                 </button>
               )}
             </div>
             {user.id !== selfId && user.status === "active" && (
               <label className="field">
-                <span>Сменить роль</span>
+                <span>Change role</span>
                 <select
                   value={user.role}
                   onChange={(event) => run(() => api(`/api/v1/users/${user.id}/role`, "POST", { role: event.target.value }))}
                 >
-                  <option value="admin">Администратор</option>
-                  <option value="manager">Менеджер</option>
-                  <option value="member">Участник</option>
-                  <option value="readonly">Только просмотр</option>
+                  <option value="admin">Admin</option>
+                  <option value="manager">Manager</option>
+                  <option value="member">Member</option>
+                  <option value="readonly">Read-only</option>
                 </select>
               </label>
             )}
           </article>
         ))}
       </div>
-      <h2 style={{ marginTop: 28 }}>Ключи</h2>
+      <h2 style={{ marginTop: 28 }}>Keys</h2>
       <div className="accounts">
         {keys.map((key) => (
           <article key={key.user_id} className="account">
@@ -137,31 +137,31 @@ export function TeamPage({ selfId }: { selfId: string }) {
             {key.key_status === "pending" && key.user_id !== selfId && (
               <div className="flex gap-2">
                 <button className="btn primary" onClick={() => run(() => api(`/api/v1/crypto/users/${key.user_id}/approve`, "POST", {}))}>
-                  Подтвердить
+                  Approve
                 </button>
                 <button className="btn" onClick={() => run(() => api(`/api/v1/crypto/users/${key.user_id}/reject`, "POST", {}))}>
-                  Отклонить
+                  Reject
                 </button>
               </div>
             )}
           </article>
         ))}
-        {keys.length === 0 && <p className="modal-hint">Подтверждённых и ожидающих ключей пока нет.</p>}
+        {keys.length === 0 && <p className="modal-hint">No approved or pending keys yet.</p>}
       </div>
       {flags.length > 0 && (
         <>
-          <h2 style={{ marginTop: 28 }}>Флаги доступа</h2>
+          <h2 style={{ marginTop: 28 }}>Access flags</h2>
           {flags.map((flag) => (
             <p key={flag.id} className="banner">
               {flag.reason}
               <button className="btn" onClick={() => run(() => api(`/api/v1/flags/${flag.id}/resolve`, "POST", {}))}>
-                Закрыть
+                Dismiss
               </button>
             </p>
           ))}
         </>
       )}
-      <h2 style={{ marginTop: 28 }}>Журнал</h2>
+      <h2 style={{ marginTop: 28 }}>Audit log</h2>
       <div className="accounts">
         {audit.map((event) => (
           <p key={event.id} className="modal-hint">

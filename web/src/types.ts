@@ -74,21 +74,21 @@ export type VaultInfo = {
 };
 
 export const categories: [string, string, string][] = [
-  ["all", "Все сервисы", "▦"],
-  ["infra", "Инфраструктура", "▤"],
-  ["domains", "Домены и защита", "◇"],
-  ["tools", "Рабочие инструменты", "◫"],
-  ["comms", "Коммуникации", "✉"],
-  ["partners", "Игры и партнёры", "◈"],
-  ["payments", "Платежи", "▱"],
-  ["other", "Другое", "⋯"],
+  ["all", "All services", "▦"],
+  ["infra", "Infrastructure", "▤"],
+  ["domains", "Domains and protection", "◇"],
+  ["tools", "Work tools", "◫"],
+  ["comms", "Communications", "✉"],
+  ["partners", "Games and partners", "◈"],
+  ["payments", "Payments", "▱"],
+  ["other", "Other", "⋯"],
 ];
 
 export const currencies = ["USD", "EUR", "RUB", "GBP", "USDT"];
 
 export const cycles: [string, string][] = [
-  ["monthly", "Ежемесячно"],
-  ["quarterly", "Ежеквартально"],
-  ["annual", "Ежегодно"],
-  ["custom", "Свой интервал"],
+  ["monthly", "Monthly"],
+  ["quarterly", "Quarterly"],
+  ["annual", "Annual"],
+  ["custom", "Custom interval"],
 ];

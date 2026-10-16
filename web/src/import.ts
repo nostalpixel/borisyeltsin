@@ -30,23 +30,23 @@ function present(value: unknown): boolean {
 
 export function splitBackup(raw: unknown): { document: unknown; secrets: SecretHit[] } {
   if (!raw || typeof raw !== "object") {
-    throw new Error("Нужен файл резервной копии этого приложения.");
+    throw new Error("Choose a backup file exported by this app.");
   }
   const doc = structuredClone(raw) as { version?: unknown; services?: unknown };
   if (doc.version !== 1 || !Array.isArray(doc.services) || doc.services.length > 500) {
-    throw new Error("Нужен файл резервной копии этого приложения.");
+    throw new Error("Choose a backup file exported by this app.");
   }
   const secrets: SecretHit[] = [];
   for (const service of doc.services) {
     if (!service || typeof service !== "object" || !("name" in service) || typeof service.name !== "string" || !service.name.trim()) {
-      throw new Error("В файле есть некорректный сервис.");
+      throw new Error("The file contains an invalid service.");
     }
     if (!("accounts" in service) || !Array.isArray(service.accounts) || service.accounts.length > 200) {
-      throw new Error("В файле есть некорректный сервис.");
+      throw new Error("The file contains an invalid service.");
     }
     for (const account of service.accounts) {
       if (!account || typeof account !== "object") {
-        throw new Error("Некорректный аккаунт.");
+        throw new Error("Invalid account.");
       }
       const row = account as Record<string, unknown>;
       const password = typeof row.password === "string" ? row.password : "";
@@ -54,7 +54,7 @@ export function splitBackup(raw: unknown): { document: unknown; secrets: SecretH
       for (const key of Object.keys(row)) {
         if (!banned.has(key.toLowerCase())) continue;
         if (present(row[key])) {
-          throw new Error("Файл содержит секрет, который нельзя импортировать.");
+          throw new Error("The file contains a secret that cannot be imported.");
         }
         delete row[key];
       }
