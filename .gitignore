@@ -10,7 +10,8 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+# Root packaging output only. Nested dist/ trees are listed with the app.
+/dist/
 downloads/
 eggs/
 .eggs/
