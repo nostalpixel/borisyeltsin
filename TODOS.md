@@ -5,7 +5,7 @@ Deferred by /plan-ceo-review on 2026-10-17 (go-live core, SCOPE REDUCTION).
 ## Ledger UI completeness (D3.3)
 
 Spec §3. API exists; UI missing: payment history (`/payments`), payment-method records (nickname/issuer/last4/expiry), auto-renew toggle, dashboard spend and overdue, unarchive and archived list, owner/tags/notes fields.
-Known bug riding along: auto-renew subscriptions never advance their renewal date, so they show overdue forever. Alerts match exact days only (missed if the process is down) and are never pruned.
+Known gap riding along: alerts match exact days only (missed if the process is down) and are never pruned.
 Why deferred: wave 1 is vault safety; the ledger already matches the reference HTML app.
 
 ## Audit completeness (D3.4)
