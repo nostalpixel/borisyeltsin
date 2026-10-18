@@ -15,7 +15,7 @@ claude mcp add --transport http borisyeltsin https://boris.example.com/mcp \
   --header "Authorization: Bearer bey_..."
 ```
 
-Any MCP client that speaks Streamable HTTP and can send a bearer header works the same way. The endpoint is stateless and answers with JSON.
+Any MCP client that speaks Streamable HTTP and can send a bearer header works the same way. The endpoint is stateless and answers with JSON. Give your agent [AGENT_INTEGRATION.md](AGENT_INTEGRATION.md): tool schemas, rules and examples written for it.
 
 ## Tools
 
