@@ -142,8 +142,69 @@ export function combineShares(share1: Uint8Array, share2: Uint8Array): Uint8Arra
   return out;
 }
 
-export function sealBytes(message: Uint8Array, recipientPublic: Uint8Array): Uint8Array {
-  return sodium.crypto_box_seal(message, recipientPublic);
+// Organization recovery, format 2 (docs/CRYPTO.md "Organization recovery").
+
+export function recoveryKeypair(): { publicKey: Uint8Array; privateKey: Uint8Array } {
+  return identityKeypair();
+}
+
+// publicFromPrivate derives the X25519 public key, to check recombined shares.
+export function publicFromPrivate(privateKey: Uint8Array): Uint8Array {
+  return sodium.crypto_scalarmult_base(privateKey);
+}
+
+export type SharePayload = {
+  v: 2;
+  org_id: string;
+  epoch: number;
+  share_index: number;
+  sender_user_id: string;
+  sender_fingerprint: string;
+  custodian_user_id: string;
+  custodian_fingerprint: string;
+  share: string;
+  recovery_public_key: string;
+};
+
+// boxShare sends a share with crypto_box_easy: authenticated from the
+// setting-up admin's identity key to the custodian's.
+export function boxShare(payload: SharePayload, custodianPublic: Uint8Array, senderPrivate: Uint8Array): Boxed {
+  const nonce = sodium.randombytes_buf(sodium.crypto_box_NONCEBYTES);
+  const ciphertext = sodium.crypto_box_easy(sodium.from_string(JSON.stringify(payload)), nonce, custodianPublic, senderPrivate);
+  return { nonce, ciphertext };
+}
+
+export function openShare(boxed: Boxed, senderPublic: Uint8Array, myPrivate: Uint8Array): SharePayload {
+  const plain = sodium.crypto_box_open_easy(boxed.ciphertext, boxed.nonce, senderPublic, myPrivate);
+  const parsed = JSON.parse(sodium.to_string(plain)) as SharePayload;
+  sodium.memzero(plain);
+  if (parsed.v !== 2 || fromB64(parsed.share).length !== 32 || fromB64(parsed.recovery_public_key).length !== 32) {
+    throw new Error("share_mismatch");
+  }
+  return parsed;
+}
+
+export type RecoveryContext = { org_id: string; vault_id: string; key_version: number; epoch: number; recovery_fingerprint: string };
+
+export function sealRecoveryEnvelope(context: RecoveryContext, vaultKey: Uint8Array, recoveryPublic: Uint8Array): Uint8Array {
+  const payload = { v: 2, ...context, key: toB64(vaultKey) };
+  return sodium.crypto_box_seal(sodium.from_string(JSON.stringify(payload)), recoveryPublic);
+}
+
+// openRecoveryEnvelope checks every context field; sealed boxes have no AD.
+export function openRecoveryEnvelope(ciphertext: Uint8Array, recoveryPublic: Uint8Array, recoveryPrivate: Uint8Array, expect: RecoveryContext): Uint8Array {
+  const plain = sodium.crypto_box_seal_open(ciphertext, recoveryPublic, recoveryPrivate);
+  const parsed = JSON.parse(sodium.to_string(plain)) as RecoveryContext & { v: number; key: string };
+  sodium.memzero(plain);
+  const same = (Object.keys(expect) as (keyof RecoveryContext)[]).every((field) => parsed[field] === expect[field]);
+  if (parsed.v !== 2 || !same) {
+    throw new Error("envelope_mismatch");
+  }
+  const key = fromB64(parsed.key);
+  if (key.length !== 32) {
+    throw new Error("envelope_mismatch");
+  }
+  return key;
 }
 
 export function openSealed(ciphertext: Uint8Array, publicKey: Uint8Array, privateKey: Uint8Array): Uint8Array {

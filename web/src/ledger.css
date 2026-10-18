@@ -918,3 +918,17 @@ dialog.verify {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Checkbox rows in the recovery member picker. */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.check input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary);
+}

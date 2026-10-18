@@ -9,18 +9,24 @@ import {
   fingerprint,
   fromB64,
   identityKeypair,
+  boxShare,
+  openRecoveryEnvelope,
   openSealed,
+  openShare,
   openVaultKey,
   passphraseKek,
   passwordRecord,
+  publicFromPrivate,
   readPassword,
-  sealBytes,
+  recoveryKeypair,
+  sealRecoveryEnvelope,
   sealVaultKey,
   secretbox,
   secretboxOpen,
   sodiumReady,
   splitKey,
   toB64,
+  type SharePayload,
 } from "./vault";
 import sodium from "libsodium-wrappers-sumo";
 
@@ -79,18 +85,57 @@ describe("vault crypto", () => {
     await expect(fingerprint(identityKeypair().publicKey)).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("combines a 2-of-2 XOR split and seals each share", () => {
-    const org = sodium.randombytes_buf(32);
-    const { share1, share2 } = splitKey(org);
-    expect(toB64(combineShares(share1, share2))).toBe(toB64(org));
-    const a = identityKeypair();
-    const b = identityKeypair();
-    const sealed1 = sealBytes(share1, a.publicKey);
-    const sealed2 = sealBytes(share2, b.publicKey);
-    const opened1 = openSealed(sealed1, a.publicKey, a.privateKey);
-    const opened2 = openSealed(sealed2, b.publicKey, b.privateKey);
-    expect(toB64(combineShares(opened1, opened2))).toBe(toB64(org));
-    expect(() => openSealed(sealed1, b.publicKey, b.privateKey)).toThrow();
-    expect(fromB64(toB64(org)).length).toBe(32);
+  it("splits a recovery private key, recombines it and checks the public key", () => {
+    const recovery = recoveryKeypair();
+    const { share1, share2 } = splitKey(recovery.privateKey);
+    const joined = combineShares(share1, share2);
+    expect(toB64(publicFromPrivate(joined))).toBe(toB64(recovery.publicKey));
+    // Byte 0's low 3 bits are clamped away by X25519, so flip a bit that counts.
+    share2[5] ^= 1;
+    expect(toB64(publicFromPrivate(combineShares(share1, share2)))).not.toBe(toB64(recovery.publicKey));
+  });
+
+  it("opens a custodian share only from the expected sender", () => {
+    const admin = identityKeypair();
+    const custodian = identityKeypair();
+    const stranger = identityKeypair();
+    const recovery = recoveryKeypair();
+    const payload: SharePayload = {
+      v: 2,
+      org_id: "org",
+      epoch: 1,
+      share_index: 1,
+      sender_user_id: "admin",
+      sender_fingerprint: "a",
+      custodian_user_id: "c",
+      custodian_fingerprint: "c",
+      share: toB64(sodium.randombytes_buf(32)),
+      recovery_public_key: toB64(recovery.publicKey),
+    };
+    const boxed = boxShare(payload, custodian.publicKey, admin.privateKey);
+    expect(openShare(boxed, admin.publicKey, custodian.privateKey)).toEqual(payload);
+    // A box from anyone but the pinned sender does not open.
+    const forged = boxShare(payload, custodian.publicKey, stranger.privateKey);
+    expect(() => openShare(forged, admin.publicKey, custodian.privateKey)).toThrow();
+  });
+
+  it("opens a recovery envelope with the recombined key and checks its context", () => {
+    const recovery = recoveryKeypair();
+    const vaultKey = sodium.randombytes_buf(32);
+    const context = { org_id: "org", vault_id: "vault", key_version: 3, epoch: 2, recovery_fingerprint: "ff" };
+    const sealed = sealRecoveryEnvelope(context, vaultKey, recovery.publicKey);
+    const { share1, share2 } = splitKey(recovery.privateKey);
+    const joined = combineShares(share1, share2);
+    expect(toB64(openRecoveryEnvelope(sealed, recovery.publicKey, joined, context))).toBe(toB64(vaultKey));
+    expect(() => openRecoveryEnvelope(sealed, recovery.publicKey, joined, { ...context, epoch: 1 })).toThrow("envelope_mismatch");
+    expect(() => openRecoveryEnvelope(sealed, recovery.publicKey, joined, { ...context, org_id: "other" })).toThrow("envelope_mismatch");
+  });
+
+  it("opens a box sealed by the Go server (nacl/box.SealAnonymous)", () => {
+    // Key pair and Go-sealed box from internal/httpserver/recovery_test.go.
+    const publicKey = fromB64("iljxAgbEX8kwDZbw9YWYBO9QckcDAjDA7iEsWPIStlk=");
+    const privateKey = fromB64("q/HDD5h1F1Q0Lpm1sjV6bvibyh4+Wuw1jn8JhTYemnI=");
+    const sealed = fromB64("D+RBPnCigWW1/7iZRWlHjHHi97psfiGWUpv1v6QGTibYYyeEjxsmw9ddzvutX+/7+sAVoY3Gkqj30695CO5Y8OsoWiRBJm0w9UMlNwA=");
+    expect(sodium.to_string(openSealed(sealed, publicKey, privateKey))).toBe("borisyeltsin challenge vector");
   });
 });

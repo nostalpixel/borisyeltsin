@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { groupFingerprint, pinKey, pinState, requireVerified } from "./pins";
+import { groupFingerprint, pinKey, pinRecoveryKey, pinState, recoveryPinState, requireRecoveryVerified, requireVerified } from "./pins";
 
 class MemoryStorage {
   private data = new Map<string, string>();
@@ -46,6 +46,20 @@ describe("fingerprint pins", () => {
     };
     pinKey("me", "anna", "aaaa");
     expect(pinState("me", "anna", "aaaa").state).toBe("unverified");
+  });
+
+  it("pins the recovery key with its epoch and refuses a rollback", () => {
+    expect(() => requireRecoveryVerified("me", "org", "aaaa", 2)).toThrow("recovery_needs_verification");
+    pinRecoveryKey("me", "org", "aaaa", 2);
+    expect(recoveryPinState("me", "org", "aaaa", 2).state).toBe("verified");
+    expect(recoveryPinState("me", "org", "bbbb", 2).state).toBe("changed");
+    // A newer epoch is a new key to verify; an older one is a rollback.
+    expect(recoveryPinState("me", "org", "cccc", 3).state).toBe("unverified");
+    expect(recoveryPinState("me", "org", "zzzz", 1).state).toBe("rollback");
+    expect(() => requireRecoveryVerified("me", "org", "zzzz", 1)).toThrow("recovery_rollback");
+    expect(() => pinRecoveryKey("me", "org", "zzzz", 1)).toThrow("recovery_rollback");
+    // Recovery pins do not collide with people's pins.
+    expect(pinState("me", "org", "aaaa").state).toBe("unverified");
   });
 
   it("groups a SHA-256 fingerprint into 16 groups of 4", () => {

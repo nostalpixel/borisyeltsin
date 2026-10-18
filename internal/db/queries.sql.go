@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const acceptInvitation = `-- name: AcceptInvitation :one
@@ -138,6 +139,53 @@ func (q *Queries) BumpVaultKeyVersion(ctx context.Context, arg BumpVaultKeyVersi
 	return i, err
 }
 
+const claimChallenge = `-- name: ClaimChallenge :one
+UPDATE recovery_challenges SET used_at = now()
+WHERE id = $1 AND custodian_id = $2 AND used_at IS NULL AND expires_at > now()
+RETURNING id, organization_id, vault_id, epoch, custodian_id, digest, expires_at, used_at, created_at
+`
+
+type ClaimChallengeParams struct {
+	ID          uuid.UUID `json:"id"`
+	CustodianID uuid.UUID `json:"custodian_id"`
+}
+
+func (q *Queries) ClaimChallenge(ctx context.Context, arg ClaimChallengeParams) (RecoveryChallenge, error) {
+	row := q.db.QueryRow(ctx, claimChallenge, arg.ID, arg.CustodianID)
+	var i RecoveryChallenge
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.VaultID,
+		&i.Epoch,
+		&i.CustodianID,
+		&i.Digest,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const confirmCustodian = `-- name: ConfirmCustodian :execrows
+UPDATE recovery_custodians SET confirmed_at = now()
+WHERE organization_id = $1 AND epoch = $2 AND user_id = $3 AND confirmed_at IS NULL
+`
+
+type ConfirmCustodianParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Epoch          int32     `json:"epoch"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) ConfirmCustodian(ctx context.Context, arg ConfirmCustodianParams) (int64, error) {
+	result, err := q.db.Exec(ctx, confirmCustodian, arg.OrganizationID, arg.Epoch, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const consumeOIDCTransaction = `-- name: ConsumeOIDCTransaction :one
 DELETE FROM oidc_transactions
 WHERE state_hash = $1 AND expires_at > now()
@@ -174,6 +222,23 @@ func (q *Queries) CountAllUsers(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
+const countConfirmedCustodians = `-- name: CountConfirmedCustodians :one
+SELECT count(*)::integer FROM recovery_custodians
+WHERE organization_id = $1 AND epoch = $2 AND confirmed_at IS NOT NULL
+`
+
+type CountConfirmedCustodiansParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Epoch          int32     `json:"epoch"`
+}
+
+func (q *Queries) CountConfirmedCustodians(ctx context.Context, arg CountConfirmedCustodiansParams) (int32, error) {
+	row := q.db.QueryRow(ctx, countConfirmedCustodians, arg.OrganizationID, arg.Epoch)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countOrganizations = `-- name: CountOrganizations :one
 SELECT count(*)::bigint FROM organizations
 `
@@ -181,6 +246,23 @@ SELECT count(*)::bigint FROM organizations
 func (q *Queries) CountOrganizations(ctx context.Context) (int64, error) {
 	row := q.db.QueryRow(ctx, countOrganizations)
 	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countRecentChallenges = `-- name: CountRecentChallenges :one
+SELECT count(*)::integer FROM recovery_challenges
+WHERE custodian_id = $1 AND created_at > $2
+`
+
+type CountRecentChallengesParams struct {
+	CustodianID uuid.UUID `json:"custodian_id"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) CountRecentChallenges(ctx context.Context, arg CountRecentChallengesParams) (int32, error) {
+	row := q.db.QueryRow(ctx, countRecentChallenges, arg.CustodianID, arg.CreatedAt)
+	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
 }
@@ -296,18 +378,13 @@ func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationPara
 }
 
 const createOrganization = `-- name: CreateOrganization :one
-INSERT INTO organizations (name) VALUES ($1) RETURNING id, name, recovery_ready, created_at
+INSERT INTO organizations (name) VALUES ($1) RETURNING id, name, created_at
 `
 
 func (q *Queries) CreateOrganization(ctx context.Context, name string) (Organization, error) {
 	row := q.db.QueryRow(ctx, createOrganization, name)
 	var i Organization
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.RecoveryReady,
-		&i.CreatedAt,
-	)
+	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
 	return i, err
 }
 
@@ -554,15 +631,6 @@ func (q *Queries) DeleteCryptoProposal(ctx context.Context, userID uuid.UUID) er
 	return err
 }
 
-const deleteCustodians = `-- name: DeleteCustodians :exec
-DELETE FROM recovery_custodians WHERE organization_id = $1
-`
-
-func (q *Queries) DeleteCustodians(ctx context.Context, organizationID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, deleteCustodians, organizationID)
-	return err
-}
-
 const deleteEnvelopeForMember = `-- name: DeleteEnvelopeForMember :exec
 DELETE FROM vault_key_envelopes WHERE vault_id = $1 AND user_id = $2
 `
@@ -623,6 +691,22 @@ func (q *Queries) DeleteGrant(ctx context.Context, arg DeleteGrantParams) error 
 	return err
 }
 
+const deleteOrgRecoveryEnvelopesExceptEpoch = `-- name: DeleteOrgRecoveryEnvelopesExceptEpoch :exec
+DELETE FROM vault_recovery_envelopes e
+USING vaults v
+WHERE v.id = e.vault_id AND v.organization_id = $1 AND e.epoch <> $2
+`
+
+type DeleteOrgRecoveryEnvelopesExceptEpochParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Epoch          int32     `json:"epoch"`
+}
+
+func (q *Queries) DeleteOrgRecoveryEnvelopesExceptEpoch(ctx context.Context, arg DeleteOrgRecoveryEnvelopesExceptEpochParams) error {
+	_, err := q.db.Exec(ctx, deleteOrgRecoveryEnvelopesExceptEpoch, arg.OrganizationID, arg.Epoch)
+	return err
+}
+
 const deletePaymentMethod = `-- name: DeletePaymentMethod :exec
 DELETE FROM payment_methods WHERE id = $1 AND organization_id = $2
 `
@@ -657,6 +741,15 @@ type DeleteRecoveryEnvelopesExceptVersionParams struct {
 
 func (q *Queries) DeleteRecoveryEnvelopesExceptVersion(ctx context.Context, arg DeleteRecoveryEnvelopesExceptVersionParams) error {
 	_, err := q.db.Exec(ctx, deleteRecoveryEnvelopesExceptVersion, arg.VaultID, arg.KeyVersion)
+	return err
+}
+
+const deleteRecoveryEnvelopesForVault = `-- name: DeleteRecoveryEnvelopesForVault :exec
+DELETE FROM vault_recovery_envelopes WHERE vault_id = $1
+`
+
+func (q *Queries) DeleteRecoveryEnvelopesForVault(ctx context.Context, vaultID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteRecoveryEnvelopesForVault, vaultID)
 	return err
 }
 
@@ -715,18 +808,13 @@ func (q *Queries) DeleteVaultMember(ctx context.Context, arg DeleteVaultMemberPa
 }
 
 const firstOrganization = `-- name: FirstOrganization :one
-SELECT id, name, recovery_ready, created_at FROM organizations ORDER BY created_at LIMIT 1
+SELECT id, name, created_at FROM organizations ORDER BY created_at LIMIT 1
 `
 
 func (q *Queries) FirstOrganization(ctx context.Context) (Organization, error) {
 	row := q.db.QueryRow(ctx, firstOrganization)
 	var i Organization
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.RecoveryReady,
-		&i.CreatedAt,
-	)
+	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
 	return i, err
 }
 
@@ -856,27 +944,25 @@ func (q *Queries) GetCryptoProposal(ctx context.Context, userID uuid.UUID) (Cryp
 	return i, err
 }
 
-const getCustodianShare = `-- name: GetCustodianShare :one
-SELECT share_index, share_ciphertext, fingerprint
-FROM recovery_custodians
-WHERE organization_id = $1 AND user_id = $2
+const getCurrentEpoch = `-- name: GetCurrentEpoch :one
+SELECT organization_id, epoch, public_key, fingerprint, created_by, creator_public_key, creator_fingerprint, status, created_at FROM recovery_epochs
+WHERE organization_id = $1 AND status IN ('active', 'degraded', 'spent')
 `
 
-type GetCustodianShareParams struct {
-	OrganizationID uuid.UUID `json:"organization_id"`
-	UserID         uuid.UUID `json:"user_id"`
-}
-
-type GetCustodianShareRow struct {
-	ShareIndex      int16  `json:"share_index"`
-	ShareCiphertext []byte `json:"share_ciphertext"`
-	Fingerprint     string `json:"fingerprint"`
-}
-
-func (q *Queries) GetCustodianShare(ctx context.Context, arg GetCustodianShareParams) (GetCustodianShareRow, error) {
-	row := q.db.QueryRow(ctx, getCustodianShare, arg.OrganizationID, arg.UserID)
-	var i GetCustodianShareRow
-	err := row.Scan(&i.ShareIndex, &i.ShareCiphertext, &i.Fingerprint)
+func (q *Queries) GetCurrentEpoch(ctx context.Context, organizationID uuid.UUID) (RecoveryEpoch, error) {
+	row := q.db.QueryRow(ctx, getCurrentEpoch, organizationID)
+	var i RecoveryEpoch
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.Epoch,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.CreatedBy,
+		&i.CreatorPublicKey,
+		&i.CreatorFingerprint,
+		&i.Status,
+		&i.CreatedAt,
+	)
 	return i, err
 }
 
@@ -905,6 +991,59 @@ func (q *Queries) GetEnvelope(ctx context.Context, arg GetEnvelopeParams) (Vault
 	return i, err
 }
 
+const getEpoch = `-- name: GetEpoch :one
+SELECT organization_id, epoch, public_key, fingerprint, created_by, creator_public_key, creator_fingerprint, status, created_at FROM recovery_epochs WHERE organization_id = $1 AND epoch = $2
+`
+
+type GetEpochParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Epoch          int32     `json:"epoch"`
+}
+
+func (q *Queries) GetEpoch(ctx context.Context, arg GetEpochParams) (RecoveryEpoch, error) {
+	row := q.db.QueryRow(ctx, getEpoch, arg.OrganizationID, arg.Epoch)
+	var i RecoveryEpoch
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.Epoch,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.CreatedBy,
+		&i.CreatorPublicKey,
+		&i.CreatorFingerprint,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getEpochCustodian = `-- name: GetEpochCustodian :one
+SELECT organization_id, epoch, share_index, user_id, fingerprint, share_nonce, share_ciphertext, confirmed_at FROM recovery_custodians
+WHERE organization_id = $1 AND epoch = $2 AND user_id = $3
+`
+
+type GetEpochCustodianParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Epoch          int32     `json:"epoch"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) GetEpochCustodian(ctx context.Context, arg GetEpochCustodianParams) (RecoveryCustodian, error) {
+	row := q.db.QueryRow(ctx, getEpochCustodian, arg.OrganizationID, arg.Epoch, arg.UserID)
+	var i RecoveryCustodian
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.Epoch,
+		&i.ShareIndex,
+		&i.UserID,
+		&i.Fingerprint,
+		&i.ShareNonce,
+		&i.ShareCiphertext,
+		&i.ConfirmedAt,
+	)
+	return i, err
+}
+
 const getInvitationByHash = `-- name: GetInvitationByHash :one
 SELECT id, organization_id, token_hash, intended_issuer, intended_subject, intended_email, role, expires_at, accepted_at, revoked_at, created_by, created_at FROM invitations WHERE token_hash = $1
 `
@@ -929,24 +1068,69 @@ func (q *Queries) GetInvitationByHash(ctx context.Context, tokenHash []byte) (In
 	return i, err
 }
 
-const getOrganization = `-- name: GetOrganization :one
-SELECT id, name, recovery_ready, created_at FROM organizations WHERE id = $1
+const getLiveRecoveryGrant = `-- name: GetLiveRecoveryGrant :one
+SELECT id, organization_id, vault_id, epoch, custodian_id, expires_at, used_at, created_at FROM recovery_grants
+WHERE custodian_id = $1 AND vault_id = $2 AND used_at IS NULL AND expires_at > now()
+ORDER BY created_at DESC
+LIMIT 1
 `
 
-func (q *Queries) GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error) {
-	row := q.db.QueryRow(ctx, getOrganization, id)
-	var i Organization
+type GetLiveRecoveryGrantParams struct {
+	CustodianID uuid.UUID `json:"custodian_id"`
+	VaultID     uuid.UUID `json:"vault_id"`
+}
+
+func (q *Queries) GetLiveRecoveryGrant(ctx context.Context, arg GetLiveRecoveryGrantParams) (RecoveryGrant, error) {
+	row := q.db.QueryRow(ctx, getLiveRecoveryGrant, arg.CustodianID, arg.VaultID)
+	var i RecoveryGrant
 	err := row.Scan(
 		&i.ID,
-		&i.Name,
-		&i.RecoveryReady,
+		&i.OrganizationID,
+		&i.VaultID,
+		&i.Epoch,
+		&i.CustodianID,
+		&i.ExpiresAt,
+		&i.UsedAt,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
+const getNextEpoch = `-- name: GetNextEpoch :one
+SELECT organization_id, epoch, public_key, fingerprint, created_by, creator_public_key, creator_fingerprint, status, created_at FROM recovery_epochs
+WHERE organization_id = $1 AND status IN ('pending', 'confirmed')
+`
+
+func (q *Queries) GetNextEpoch(ctx context.Context, organizationID uuid.UUID) (RecoveryEpoch, error) {
+	row := q.db.QueryRow(ctx, getNextEpoch, organizationID)
+	var i RecoveryEpoch
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.Epoch,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.CreatedBy,
+		&i.CreatorPublicKey,
+		&i.CreatorFingerprint,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getOrganization = `-- name: GetOrganization :one
+SELECT id, name, created_at FROM organizations WHERE id = $1
+`
+
+func (q *Queries) GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error) {
+	row := q.db.QueryRow(ctx, getOrganization, id)
+	var i Organization
+	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
+	return i, err
+}
+
 const getRecoveryEnvelope = `-- name: GetRecoveryEnvelope :one
-SELECT vault_id, key_version, nonce, ciphertext FROM vault_recovery_envelopes WHERE vault_id = $1 AND key_version = $2
+SELECT vault_id, key_version, ciphertext, epoch FROM vault_recovery_envelopes WHERE vault_id = $1 AND key_version = $2
 `
 
 type GetRecoveryEnvelopeParams struct {
@@ -960,8 +1144,8 @@ func (q *Queries) GetRecoveryEnvelope(ctx context.Context, arg GetRecoveryEnvelo
 	err := row.Scan(
 		&i.VaultID,
 		&i.KeyVersion,
-		&i.Nonce,
 		&i.Ciphertext,
+		&i.Epoch,
 	)
 	return i, err
 }
@@ -1182,6 +1366,34 @@ func (q *Queries) InsertAuditEvent(ctx context.Context, arg InsertAuditEventPara
 	return err
 }
 
+const insertChallenge = `-- name: InsertChallenge :exec
+INSERT INTO recovery_challenges (id, organization_id, vault_id, epoch, custodian_id, digest, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertChallengeParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+	VaultID        uuid.UUID `json:"vault_id"`
+	Epoch          int32     `json:"epoch"`
+	CustodianID    uuid.UUID `json:"custodian_id"`
+	Digest         []byte    `json:"digest"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+func (q *Queries) InsertChallenge(ctx context.Context, arg InsertChallengeParams) error {
+	_, err := q.db.Exec(ctx, insertChallenge,
+		arg.ID,
+		arg.OrganizationID,
+		arg.VaultID,
+		arg.Epoch,
+		arg.CustodianID,
+		arg.Digest,
+		arg.ExpiresAt,
+	)
+	return err
+}
+
 const insertCredentialFlag = `-- name: InsertCredentialFlag :one
 INSERT INTO credential_flags (organization_id, vault_item_id, service_account_id, reason)
 VALUES ($1, $2, $3, $4)
@@ -1274,27 +1486,74 @@ func (q *Queries) InsertCryptoIdentity(ctx context.Context, arg InsertCryptoIden
 }
 
 const insertCustodian = `-- name: InsertCustodian :exec
-INSERT INTO recovery_custodians (organization_id, user_id, share_index, share_ciphertext, fingerprint)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO recovery_custodians (
+    organization_id, epoch, share_index, user_id, fingerprint, share_nonce, share_ciphertext
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertCustodianParams struct {
 	OrganizationID  uuid.UUID `json:"organization_id"`
-	UserID          uuid.UUID `json:"user_id"`
+	Epoch           int32     `json:"epoch"`
 	ShareIndex      int16     `json:"share_index"`
-	ShareCiphertext []byte    `json:"share_ciphertext"`
+	UserID          uuid.UUID `json:"user_id"`
 	Fingerprint     string    `json:"fingerprint"`
+	ShareNonce      []byte    `json:"share_nonce"`
+	ShareCiphertext []byte    `json:"share_ciphertext"`
 }
 
 func (q *Queries) InsertCustodian(ctx context.Context, arg InsertCustodianParams) error {
 	_, err := q.db.Exec(ctx, insertCustodian,
 		arg.OrganizationID,
-		arg.UserID,
+		arg.Epoch,
 		arg.ShareIndex,
-		arg.ShareCiphertext,
+		arg.UserID,
 		arg.Fingerprint,
+		arg.ShareNonce,
+		arg.ShareCiphertext,
 	)
 	return err
+}
+
+const insertEpoch = `-- name: InsertEpoch :one
+INSERT INTO recovery_epochs (
+    organization_id, epoch, public_key, fingerprint, created_by, creator_public_key, creator_fingerprint
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING organization_id, epoch, public_key, fingerprint, created_by, creator_public_key, creator_fingerprint, status, created_at
+`
+
+type InsertEpochParams struct {
+	OrganizationID     uuid.UUID `json:"organization_id"`
+	Epoch              int32     `json:"epoch"`
+	PublicKey          []byte    `json:"public_key"`
+	Fingerprint        string    `json:"fingerprint"`
+	CreatedBy          uuid.UUID `json:"created_by"`
+	CreatorPublicKey   []byte    `json:"creator_public_key"`
+	CreatorFingerprint string    `json:"creator_fingerprint"`
+}
+
+func (q *Queries) InsertEpoch(ctx context.Context, arg InsertEpochParams) (RecoveryEpoch, error) {
+	row := q.db.QueryRow(ctx, insertEpoch,
+		arg.OrganizationID,
+		arg.Epoch,
+		arg.PublicKey,
+		arg.Fingerprint,
+		arg.CreatedBy,
+		arg.CreatorPublicKey,
+		arg.CreatorFingerprint,
+	)
+	var i RecoveryEpoch
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.Epoch,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.CreatedBy,
+		&i.CreatorPublicKey,
+		&i.CreatorFingerprint,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const insertGrant = `-- name: InsertGrant :exec
@@ -1404,6 +1663,42 @@ func (q *Queries) InsertPaymentMethod(ctx context.Context, arg InsertPaymentMeth
 		&i.Last4,
 		&i.ExpMonth,
 		&i.ExpYear,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertRecoveryGrant = `-- name: InsertRecoveryGrant :one
+INSERT INTO recovery_grants (organization_id, vault_id, epoch, custodian_id, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, organization_id, vault_id, epoch, custodian_id, expires_at, used_at, created_at
+`
+
+type InsertRecoveryGrantParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	VaultID        uuid.UUID `json:"vault_id"`
+	Epoch          int32     `json:"epoch"`
+	CustodianID    uuid.UUID `json:"custodian_id"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+func (q *Queries) InsertRecoveryGrant(ctx context.Context, arg InsertRecoveryGrantParams) (RecoveryGrant, error) {
+	row := q.db.QueryRow(ctx, insertRecoveryGrant,
+		arg.OrganizationID,
+		arg.VaultID,
+		arg.Epoch,
+		arg.CustodianID,
+		arg.ExpiresAt,
+	)
+	var i RecoveryGrant
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.VaultID,
+		&i.Epoch,
+		&i.CustodianID,
+		&i.ExpiresAt,
+		&i.UsedAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -1578,52 +1873,6 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 	return items, nil
 }
 
-const listCustodians = `-- name: ListCustodians :many
-SELECT c.organization_id, c.user_id, c.share_index, c.fingerprint, c.created_at, u.display_name, u.email
-FROM recovery_custodians c
-JOIN users u ON u.id = c.user_id
-WHERE c.organization_id = $1
-ORDER BY c.share_index
-`
-
-type ListCustodiansRow struct {
-	OrganizationID uuid.UUID `json:"organization_id"`
-	UserID         uuid.UUID `json:"user_id"`
-	ShareIndex     int16     `json:"share_index"`
-	Fingerprint    string    `json:"fingerprint"`
-	CreatedAt      time.Time `json:"created_at"`
-	DisplayName    string    `json:"display_name"`
-	Email          string    `json:"email"`
-}
-
-func (q *Queries) ListCustodians(ctx context.Context, organizationID uuid.UUID) ([]ListCustodiansRow, error) {
-	rows, err := q.db.Query(ctx, listCustodians, organizationID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListCustodiansRow{}
-	for rows.Next() {
-		var i ListCustodiansRow
-		if err := rows.Scan(
-			&i.OrganizationID,
-			&i.UserID,
-			&i.ShareIndex,
-			&i.Fingerprint,
-			&i.CreatedAt,
-			&i.DisplayName,
-			&i.Email,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listEnvelopeHolders = `-- name: ListEnvelopeHolders :many
 SELECT user_id FROM vault_key_envelopes WHERE vault_id = $1 AND key_version = $2
 `
@@ -1646,6 +1895,105 @@ func (q *Queries) ListEnvelopeHolders(ctx context.Context, arg ListEnvelopeHolde
 			return nil, err
 		}
 		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEpochCustodians = `-- name: ListEpochCustodians :many
+SELECT c.share_index, c.user_id, c.fingerprint, c.confirmed_at,
+       u.display_name, u.email, u.status AS user_status
+FROM recovery_custodians c
+JOIN users u ON u.id = c.user_id
+WHERE c.organization_id = $1 AND c.epoch = $2
+ORDER BY c.share_index
+`
+
+type ListEpochCustodiansParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Epoch          int32     `json:"epoch"`
+}
+
+type ListEpochCustodiansRow struct {
+	ShareIndex  int16              `json:"share_index"`
+	UserID      uuid.UUID          `json:"user_id"`
+	Fingerprint string             `json:"fingerprint"`
+	ConfirmedAt pgtype.Timestamptz `json:"confirmed_at"`
+	DisplayName string             `json:"display_name"`
+	Email       string             `json:"email"`
+	UserStatus  string             `json:"user_status"`
+}
+
+func (q *Queries) ListEpochCustodians(ctx context.Context, arg ListEpochCustodiansParams) ([]ListEpochCustodiansRow, error) {
+	rows, err := q.db.Query(ctx, listEpochCustodians, arg.OrganizationID, arg.Epoch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEpochCustodiansRow{}
+	for rows.Next() {
+		var i ListEpochCustodiansRow
+		if err := rows.Scan(
+			&i.ShareIndex,
+			&i.UserID,
+			&i.Fingerprint,
+			&i.ConfirmedAt,
+			&i.DisplayName,
+			&i.Email,
+			&i.UserStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEpochsInvolvingUser = `-- name: ListEpochsInvolvingUser :many
+SELECT e.epoch, e.status, (e.created_by = $1)::boolean AS is_creator,
+       EXISTS (
+           SELECT 1 FROM recovery_custodians c
+           WHERE c.organization_id = e.organization_id AND c.epoch = e.epoch AND c.user_id = $1
+       )::boolean AS is_custodian
+FROM recovery_epochs e
+WHERE e.organization_id = $2 AND e.status <> 'retired'
+`
+
+type ListEpochsInvolvingUserParams struct {
+	UserID         uuid.UUID `json:"user_id"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+}
+
+type ListEpochsInvolvingUserRow struct {
+	Epoch       int32  `json:"epoch"`
+	Status      string `json:"status"`
+	IsCreator   bool   `json:"is_creator"`
+	IsCustodian bool   `json:"is_custodian"`
+}
+
+func (q *Queries) ListEpochsInvolvingUser(ctx context.Context, arg ListEpochsInvolvingUserParams) ([]ListEpochsInvolvingUserRow, error) {
+	rows, err := q.db.Query(ctx, listEpochsInvolvingUser, arg.UserID, arg.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEpochsInvolvingUserRow{}
+	for rows.Next() {
+		var i ListEpochsInvolvingUserRow
+		if err := rows.Scan(
+			&i.Epoch,
+			&i.Status,
+			&i.IsCreator,
+			&i.IsCustodian,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -2280,6 +2628,32 @@ func (q *Queries) LockBootstrap(ctx context.Context) error {
 	return err
 }
 
+const lockEpoch = `-- name: LockEpoch :one
+SELECT organization_id, epoch, public_key, fingerprint, created_by, creator_public_key, creator_fingerprint, status, created_at FROM recovery_epochs WHERE organization_id = $1 AND epoch = $2 FOR UPDATE
+`
+
+type LockEpochParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Epoch          int32     `json:"epoch"`
+}
+
+func (q *Queries) LockEpoch(ctx context.Context, arg LockEpochParams) (RecoveryEpoch, error) {
+	row := q.db.QueryRow(ctx, lockEpoch, arg.OrganizationID, arg.Epoch)
+	var i RecoveryEpoch
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.Epoch,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.CreatedBy,
+		&i.CreatorPublicKey,
+		&i.CreatorFingerprint,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const lockVault = `-- name: LockVault :one
 SELECT id, organization_id, name, description, key_version, rotation_required, created_at, archived_at, initialized FROM vaults WHERE id = $1 AND organization_id = $2 FOR UPDATE
 `
@@ -2313,6 +2687,17 @@ UPDATE vaults SET initialized = true WHERE id = $1
 func (q *Queries) MarkVaultInitialized(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, markVaultInitialized, id)
 	return err
+}
+
+const maxEpoch = `-- name: MaxEpoch :one
+SELECT COALESCE(MAX(epoch), 0)::integer FROM recovery_epochs WHERE organization_id = $1
+`
+
+func (q *Queries) MaxEpoch(ctx context.Context, organizationID uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, maxEpoch, organizationID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const rejectCryptoIdentity = `-- name: RejectCryptoIdentity :one
@@ -2449,6 +2834,26 @@ func (q *Queries) ResolveCredentialFlag(ctx context.Context, arg ResolveCredenti
 	return i, err
 }
 
+const retireCurrentEpoch = `-- name: RetireCurrentEpoch :exec
+UPDATE recovery_epochs SET status = 'retired'
+WHERE organization_id = $1 AND status IN ('active', 'degraded', 'spent')
+`
+
+func (q *Queries) RetireCurrentEpoch(ctx context.Context, organizationID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, retireCurrentEpoch, organizationID)
+	return err
+}
+
+const retireNextEpoch = `-- name: RetireNextEpoch :exec
+UPDATE recovery_epochs SET status = 'retired'
+WHERE organization_id = $1 AND status IN ('pending', 'confirmed')
+`
+
+func (q *Queries) RetireNextEpoch(ctx context.Context, organizationID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, retireNextEpoch, organizationID)
+	return err
+}
+
 const revokeInvitation = `-- name: RevokeInvitation :one
 UPDATE invitations SET revoked_at = now()
 WHERE id = $1 AND organization_id = $2 AND accepted_at IS NULL AND revoked_at IS NULL
@@ -2554,17 +2959,18 @@ func (q *Queries) RotateVaultItem(ctx context.Context, arg RotateVaultItemParams
 	return i, err
 }
 
-const setRecoveryReady = `-- name: SetRecoveryReady :exec
-UPDATE organizations SET recovery_ready = $2 WHERE id = $1
+const setEpochStatus = `-- name: SetEpochStatus :exec
+UPDATE recovery_epochs SET status = $3 WHERE organization_id = $1 AND epoch = $2
 `
 
-type SetRecoveryReadyParams struct {
-	ID            uuid.UUID `json:"id"`
-	RecoveryReady bool      `json:"recovery_ready"`
+type SetEpochStatusParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Epoch          int32     `json:"epoch"`
+	Status         string    `json:"status"`
 }
 
-func (q *Queries) SetRecoveryReady(ctx context.Context, arg SetRecoveryReadyParams) error {
-	_, err := q.db.Exec(ctx, setRecoveryReady, arg.ID, arg.RecoveryReady)
+func (q *Queries) SetEpochStatus(ctx context.Context, arg SetEpochStatusParams) error {
+	_, err := q.db.Exec(ctx, setEpochStatus, arg.OrganizationID, arg.Epoch, arg.Status)
 	return err
 }
 
@@ -3032,15 +3438,15 @@ func (q *Queries) UpsertEnvelope(ctx context.Context, arg UpsertEnvelopeParams) 
 }
 
 const upsertRecoveryEnvelope = `-- name: UpsertRecoveryEnvelope :exec
-INSERT INTO vault_recovery_envelopes (vault_id, key_version, nonce, ciphertext)
+INSERT INTO vault_recovery_envelopes (vault_id, key_version, epoch, ciphertext)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (vault_id, key_version) DO UPDATE SET nonce = EXCLUDED.nonce, ciphertext = EXCLUDED.ciphertext
+ON CONFLICT (vault_id, key_version) DO UPDATE SET epoch = EXCLUDED.epoch, ciphertext = EXCLUDED.ciphertext
 `
 
 type UpsertRecoveryEnvelopeParams struct {
 	VaultID    uuid.UUID `json:"vault_id"`
 	KeyVersion int32     `json:"key_version"`
-	Nonce      []byte    `json:"nonce"`
+	Epoch      int32     `json:"epoch"`
 	Ciphertext []byte    `json:"ciphertext"`
 }
 
@@ -3048,7 +3454,7 @@ func (q *Queries) UpsertRecoveryEnvelope(ctx context.Context, arg UpsertRecovery
 	_, err := q.db.Exec(ctx, upsertRecoveryEnvelope,
 		arg.VaultID,
 		arg.KeyVersion,
-		arg.Nonce,
+		arg.Epoch,
 		arg.Ciphertext,
 	)
 	return err
@@ -3068,4 +3474,17 @@ type UpsertVaultMemberParams struct {
 func (q *Queries) UpsertVaultMember(ctx context.Context, arg UpsertVaultMemberParams) error {
 	_, err := q.db.Exec(ctx, upsertVaultMember, arg.VaultID, arg.UserID, arg.Role)
 	return err
+}
+
+const useRecoveryGrant = `-- name: UseRecoveryGrant :execrows
+UPDATE recovery_grants SET used_at = now()
+WHERE id = $1 AND used_at IS NULL AND expires_at > now()
+`
+
+func (q *Queries) UseRecoveryGrant(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, useRecoveryGrant, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

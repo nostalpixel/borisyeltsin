@@ -3,6 +3,7 @@ import type { PublicKey, VaultInfo } from "../types";
 import {
   KDF_MEMLIMIT,
   KDF_OPSLIMIT,
+  boxShare,
   combineShares,
   decryptItem,
   deriveKek,
@@ -10,22 +11,27 @@ import {
   fingerprint,
   fromB64,
   identityKeypair,
+  openRecoveryEnvelope,
   openSealed,
+  openShare,
   openVaultKey,
   passphraseKek,
   passwordRecord,
+  publicFromPrivate,
   randomBytes,
   readPassword,
-  sealBytes,
+  recoveryKeypair,
+  sealRecoveryEnvelope,
   sealVaultKey,
   secretbox,
   secretboxOpen,
   sodiumReady,
   splitKey,
   toB64,
+  type SharePayload,
 } from "./vault";
 import sodium from "libsodium-wrappers-sumo";
-import { requireVerified } from "./pins";
+import { pinRecoveryKey, recoveryPinState, requireRecoveryVerified, requireVerified } from "./pins";
 
 export type IdentityRecord = {
   status: string;
@@ -206,38 +212,272 @@ export async function changePassphrase(keys: HeldKeys, passphrase: string) {
   });
 }
 
-export async function enrollRecovery(viewerId: string, first: CustodianChoice, second: CustodianChoice, vault: VaultInfo, vaultKey: Uint8Array) {
-  requireVerified(viewerId, first.user_id, first.fingerprint);
-  requireVerified(viewerId, second.user_id, second.fingerprint);
-  await sodiumReady();
-  const org = randomBytes(32);
-  const { share1, share2 } = splitKey(org);
-  const sealed1 = sealBytes(share1, fromB64(first.public_key));
-  const sealed2 = sealBytes(share2, fromB64(second.public_key));
-  await api("/api/v1/recovery", "POST", {
-    custodians: [
-      { user_id: first.user_id, share_index: 1, fingerprint: first.fingerprint, share_ciphertext: toB64(sealed1) },
-      { user_id: second.user_id, share_index: 2, fingerprint: second.fingerprint, share_ciphertext: toB64(sealed2) },
-    ],
-  });
-  const wrapped = secretbox(vaultKey, org);
-  await api(`/api/v1/vaults/${vault.id}/recovery-envelope`, "POST", {
-    nonce: toB64(wrapped.nonce),
-    ciphertext: toB64(wrapped.ciphertext),
-    expected_key_version: vault.key_version,
-  });
-  sodium.memzero(org);
-  sodium.memzero(share1);
-  sodium.memzero(share2);
+// Organization recovery, format 2. docs/CRYPTO.md "Organization recovery" is
+// the specification; each function names the step it implements.
+
+export type Custodian = {
+  share_index: number;
+  user_id: string;
+  display_name: string;
+  email: string;
+  fingerprint: string;
+  confirmed: boolean;
+  active: boolean;
+};
+
+export type Epoch = {
+  epoch: number;
+  status: "pending" | "confirmed" | "active" | "degraded" | "spent" | "retired";
+  public_key: string;
+  fingerprint: string;
+  created_by: string;
+  creator_public_key: string;
+  creator_fingerprint: string;
+  custodians: Custodian[];
+};
+
+export type RecoveryInfo = {
+  organization_id: string;
+  recovery_ready: boolean;
+  max_epoch: number;
+  vaults: { id: string; name: string }[];
+  current: Epoch | null;
+  next: Epoch | null;
+};
+
+export function loadRecovery(): Promise<RecoveryInfo> {
+  return api<RecoveryInfo>("/api/v1/recovery");
 }
 
-export async function myShare(keys: HeldKeys): Promise<string> {
+// sealTarget mirrors the server: a confirmed epoch waiting for its first
+// envelope, else the active epoch while recovery is ready, else none.
+export function sealTarget(info: RecoveryInfo): Epoch | null {
+  if (info.next?.status === "confirmed") return info.next;
+  if (info.recovery_ready && info.current?.status === "active") return info.current;
+  return null;
+}
+
+// setupRecovery generates the recovery key, splits its private half and
+// boxes one share to each custodian from this admin's identity key.
+export async function setupRecovery(viewerId: string, keys: HeldKeys, info: RecoveryInfo, first: CustodianChoice, second: CustodianChoice) {
+  requireVerified(viewerId, first.user_id, first.fingerprint);
+  requireVerified(viewerId, second.user_id, second.fingerprint);
+  if (first.user_id === second.user_id || first.fingerprint === second.fingerprint) {
+    throw new Error("custodians_not_distinct");
+  }
   await sodiumReady();
-  const row = await api<{ share_ciphertext: string }>("/api/v1/recovery/share");
-  const share = openSealed(fromB64(row.share_ciphertext), keys.publicKey, keys.privateKey);
-  const text = toB64(share);
-  sodium.memzero(share);
-  return text;
+  const epoch = info.max_epoch + 1;
+  const recovery = recoveryKeypair();
+  const recoveryFingerprint = await fingerprint(recovery.publicKey);
+  const { share1, share2 } = splitKey(recovery.privateKey);
+  sodium.memzero(recovery.privateKey);
+  try {
+    const custodians = [first, second].map((custodian, index) => {
+      const payload: SharePayload = {
+        v: 2,
+        org_id: info.organization_id,
+        epoch,
+        share_index: index + 1,
+        sender_user_id: viewerId,
+        sender_fingerprint: keys.fingerprint,
+        custodian_user_id: custodian.user_id,
+        custodian_fingerprint: custodian.fingerprint,
+        share: toB64(index === 0 ? share1 : share2),
+        recovery_public_key: toB64(recovery.publicKey),
+      };
+      const boxed = boxShare(payload, fromB64(custodian.public_key), keys.privateKey);
+      return {
+        user_id: custodian.user_id,
+        share_index: index + 1,
+        fingerprint: custodian.fingerprint,
+        nonce: toB64(boxed.nonce),
+        share_ciphertext: toB64(boxed.ciphertext),
+      };
+    });
+    await api("/api/v1/recovery/epochs", "POST", { epoch, public_key: toB64(recovery.publicKey), custodians });
+  } finally {
+    sodium.memzero(share1);
+    sodium.memzero(share2);
+  }
+  // This browser made the key, so it knows the fingerprint is genuine.
+  pinRecoveryKey(viewerId, info.organization_id, recoveryFingerprint, epoch);
+}
+
+type ShareRow = {
+  epoch: number;
+  status: Epoch["status"];
+  share_index: number;
+  fingerprint: string;
+  nonce: string;
+  share_ciphertext: string;
+  confirmed: boolean;
+  public_key: string;
+  recovery_fingerprint: string;
+  created_by: string;
+  creator_public_key: string;
+  creator_fingerprint: string;
+};
+
+// openMyShare is "Custodian shares", confirmation steps 1 to 3: the box must
+// open with the pinned creator's key and every field must match.
+async function openMyShare(viewerId: string, keys: HeldKeys, orgId: string, epoch?: number): Promise<{ row: ShareRow; payload: SharePayload }> {
+  await sodiumReady();
+  const row = await api<ShareRow>(`/api/v1/recovery/share${epoch ? `?epoch=${epoch}` : ""}`);
+  const creatorPublic = fromB64(row.creator_public_key);
+  if ((await fingerprint(creatorPublic)) !== row.creator_fingerprint) {
+    throw new Error("fingerprint_mismatch");
+  }
+  requireVerified(viewerId, row.created_by, row.creator_fingerprint);
+  let payload: SharePayload;
+  try {
+    payload = openShare({ nonce: fromB64(row.nonce), ciphertext: fromB64(row.share_ciphertext) }, creatorPublic, keys.privateKey);
+  } catch {
+    throw new Error("share_mismatch");
+  }
+  const matches =
+    payload.org_id === orgId &&
+    payload.epoch === row.epoch &&
+    payload.share_index === row.share_index &&
+    payload.sender_user_id === row.created_by &&
+    payload.sender_fingerprint === row.creator_fingerprint &&
+    payload.custodian_user_id === viewerId &&
+    payload.custodian_fingerprint === keys.fingerprint &&
+    payload.recovery_public_key === row.public_key &&
+    (await fingerprint(fromB64(row.public_key))) === row.recovery_fingerprint;
+  if (!matches) {
+    throw new Error("share_mismatch");
+  }
+  return { row, payload };
+}
+
+// confirmMyShare is confirmation step 4: pin the recovery key and report it.
+export async function confirmMyShare(viewerId: string, keys: HeldKeys, orgId: string) {
+  const { row } = await openMyShare(viewerId, keys, orgId);
+  if (row.status !== "pending" || row.confirmed) {
+    throw new Error("nothing_to_confirm");
+  }
+  pinRecoveryKey(viewerId, orgId, row.recovery_fingerprint, row.epoch);
+  await api("/api/v1/recovery/confirm", "POST", { epoch: row.epoch, fingerprint: row.recovery_fingerprint });
+}
+
+// revealMyShare returns this custodian's share as text, to read to the other
+// custodian during a recovery.
+export async function revealMyShare(viewerId: string, keys: HeldKeys, orgId: string, epoch: number): Promise<string> {
+  const { payload } = await openMyShare(viewerId, keys, orgId, epoch);
+  return payload.share;
+}
+
+// sealRecovery seals the current vault key to the recovery public key. For a
+// confirmed epoch this first envelope is what activates it.
+export async function sealRecovery(viewerId: string, orgId: string, vault: VaultInfo, vaultKey: Uint8Array, target: Epoch) {
+  await api(`/api/v1/vaults/${vault.id}/recovery-envelope`, "POST", {
+    epoch: target.epoch,
+    ciphertext: await recoveryEnvelopeFor(viewerId, orgId, vault.id, vault.key_version, vaultKey, target),
+    expected_key_version: vault.key_version,
+  });
+}
+
+async function recoveryEnvelopeFor(viewerId: string, orgId: string, vaultId: string, keyVersion: number, vaultKey: Uint8Array, target: Epoch): Promise<string> {
+  await sodiumReady();
+  const recoveryPublic = fromB64(target.public_key);
+  if ((await fingerprint(recoveryPublic)) !== target.fingerprint) {
+    throw new Error("fingerprint_mismatch");
+  }
+  requireRecoveryVerified(viewerId, orgId, target.fingerprint, target.epoch);
+  const context = { org_id: orgId, vault_id: vaultId, key_version: keyVersion, epoch: target.epoch, recovery_fingerprint: target.fingerprint };
+  return toB64(sealRecoveryEnvelope(context, vaultKey, recoveryPublic));
+}
+
+export type RecoveredVault = {
+  vaultId: string;
+  keyVersion: number;
+  oldKey: Uint8Array;
+  expiresAt: string;
+  members: { user_id: string; role: string; display_name: string; email: string }[];
+};
+
+// proveRecovery is "Recovering", steps 1 to 4: combine the shares, answer the
+// server's challenge, and open the vault key from the recovery envelope.
+export async function proveRecovery(viewerId: string, keys: HeldKeys, info: RecoveryInfo, vaultId: string, otherShare: string): Promise<RecoveredVault> {
+  const current = info.current;
+  if (!info.recovery_ready || !current || current.status !== "active") {
+    throw new Error("recovery_unavailable");
+  }
+  const pin = recoveryPinState(viewerId, info.organization_id, current.fingerprint, current.epoch);
+  if (pin.state === "rollback") throw new Error("recovery_rollback");
+  if (pin.state === "changed") throw new Error("recovery_key_changed");
+  const { payload } = await openMyShare(viewerId, keys, info.organization_id, current.epoch);
+  const mine = fromB64(payload.share);
+  let other: Uint8Array;
+  try {
+    other = fromB64(otherShare.replace(/\s+/g, ""));
+  } catch {
+    sodium.memzero(mine);
+    throw new Error("bad_share");
+  }
+  if (other.length !== 32) {
+    sodium.memzero(mine);
+    throw new Error("bad_share");
+  }
+  const privateKey = combineShares(mine, other);
+  sodium.memzero(mine);
+  sodium.memzero(other);
+  try {
+    const publicKey = publicFromPrivate(privateKey);
+    if ((await fingerprint(publicKey)) !== current.fingerprint) {
+      throw new Error("shares_do_not_match");
+    }
+    // The shares came from an authenticated box and the other custodian, so
+    // the recombined key is genuine; pin it for this browser.
+    pinRecoveryKey(viewerId, info.organization_id, current.fingerprint, current.epoch);
+
+    const challenge = await api<{ challenge_id: string; epoch: number; sealed: string }>("/api/v1/recovery/challenge", "POST", { vault_id: vaultId });
+    const plain = openSealed(fromB64(challenge.sealed), publicKey, privateKey);
+    const fields = JSON.parse(sodium.to_string(plain)) as { challenge_id: string; org_id: string; vault_id: string; epoch: number; custodian_id: string };
+    if (
+      fields.challenge_id !== challenge.challenge_id ||
+      fields.org_id !== info.organization_id ||
+      fields.vault_id !== vaultId ||
+      fields.epoch !== current.epoch ||
+      fields.custodian_id !== viewerId
+    ) {
+      throw new Error("challenge_mismatch");
+    }
+    const grant = await api<{ expires_at: string }>("/api/v1/recovery/grant", "POST", { challenge_id: challenge.challenge_id, response: toB64(plain) });
+
+    const detail = await api<{ key_version: number; members: RecoveredVault["members"] }>(`/api/v1/vaults/${vaultId}`);
+    const env = await api<{ key_version: number; epoch: number; ciphertext: string }>(`/api/v1/vaults/${vaultId}/recovery-envelope`);
+    const oldKey = openRecoveryEnvelope(fromB64(env.ciphertext), publicKey, privateKey, {
+      org_id: info.organization_id,
+      vault_id: vaultId,
+      key_version: detail.key_version,
+      epoch: current.epoch,
+      recovery_fingerprint: current.fingerprint,
+    });
+    return { vaultId, keyVersion: detail.key_version, oldKey, expiresAt: grant.expires_at, members: detail.members };
+  } finally {
+    sodium.memzero(privateKey);
+  }
+}
+
+// finishRecovery is step 5: rotate under the grant, keeping the chosen
+// verified members, and become an owner. No recovery envelope: the key is spent.
+export async function finishRecovery(viewerId: string, keys: HeldKeys, recovered: RecoveredVault, keep: string[]) {
+  await sodiumReady();
+  const vault = { id: recovered.vaultId, key_version: recovered.keyVersion } as VaultInfo;
+  try {
+    const keysList = await api<{ keys: PublicKey[] }>("/api/v1/crypto/keys");
+    const recipients = [...new Set([viewerId, ...keep])].map((id) => {
+      if (id === viewerId) return { user_id: id, fingerprint: keys.fingerprint, public_key: toB64(keys.publicKey) };
+      const pub = keysList.keys.find((row) => row.user_id === id && row.key_status === "approved");
+      if (!pub) throw new Error("fingerprint_mismatch");
+      requireVerified(viewerId, id, pub.fingerprint);
+      return pub;
+    });
+    return await rotateWith(vault, recovered.oldKey, recipients, null);
+  } finally {
+    sodium.memzero(recovered.oldKey);
+  }
 }
 
 export type VaultItems = {
@@ -289,9 +529,32 @@ export async function savePassword(
   return { id, version: created.version };
 }
 
-export async function rotateVault(viewerId: string, vault: VaultInfo, vaultKey: Uint8Array, share1: string, share2: string) {
+// rotateVault re-encrypts every item under a new key, seals it to every member
+// and, when recovery is usable, to the recovery key. No custodian is needed.
+export async function rotateVault(viewerId: string, orgId: string, vault: VaultInfo, vaultKey: Uint8Array, target: Epoch | null) {
   await sodiumReady();
-  const org = combineShares(fromB64(share1), fromB64(share2));
+  const detail = await api<{ members: { user_id: string }[] }>(`/api/v1/vaults/${vault.id}`);
+  const keysList = await api<{ keys: PublicKey[] }>("/api/v1/crypto/keys");
+  const recipients = detail.members.map((member) => {
+    const pub = keysList.keys.find((row) => row.user_id === member.user_id && row.key_status === "approved");
+    if (!pub) {
+      throw new Error("fingerprint_mismatch");
+    }
+    requireVerified(viewerId, member.user_id, pub.fingerprint);
+    return pub;
+  });
+  const recovery = target ? { viewerId, orgId, target } : null;
+  const next = await rotateWith(vault, vaultKey, recipients, recovery);
+  sodium.memzero(vaultKey);
+  return next;
+}
+
+async function rotateWith(
+  vault: VaultInfo,
+  vaultKey: Uint8Array,
+  recipients: { user_id: string; fingerprint: string; public_key: string }[],
+  recovery: { viewerId: string; orgId: string; target: Epoch } | null,
+) {
   const nextKey = randomBytes(32);
   const nextVersion = vault.key_version + 1;
   const listed = await api<{ items: ItemRow[] }>(`/api/v1/vaults/${vault.id}/items`);
@@ -303,28 +566,22 @@ export async function rotateVault(viewerId: string, vault: VaultInfo, vaultKey: 
     const boxed = encryptItem(vault.id, item.id, nextVersion, nextKey, plain);
     return { id: item.id, version: item.version, nonce: toB64(boxed.nonce), ciphertext: toB64(boxed.ciphertext) };
   });
-  const detail = await api<{ members: { user_id: string }[] }>(`/api/v1/vaults/${vault.id}`);
-  const keysList = await api<{ keys: PublicKey[] }>("/api/v1/crypto/keys");
-  const envelopes = detail.members.map((member) => {
-    const pub = keysList.keys.find((row) => row.user_id === member.user_id && row.key_status === "approved");
-    if (!pub) {
-      throw new Error("fingerprint_mismatch");
-    }
-    requireVerified(viewerId, member.user_id, pub.fingerprint);
-    return {
-      user_id: member.user_id,
-      fingerprint: pub.fingerprint,
-      ciphertext: toB64(sealVaultKey(vault.id, nextVersion, nextKey, fromB64(pub.public_key))),
-    };
-  });
-  const wrapped = secretbox(nextKey, org);
+  const envelopes = recipients.map((pub) => ({
+    user_id: pub.user_id,
+    fingerprint: pub.fingerprint,
+    ciphertext: toB64(sealVaultKey(vault.id, nextVersion, nextKey, fromB64(pub.public_key))),
+  }));
+  const recoveryField = recovery
+    ? {
+        epoch: recovery.target.epoch,
+        ciphertext: await recoveryEnvelopeFor(recovery.viewerId, recovery.orgId, vault.id, nextVersion, nextKey, recovery.target),
+      }
+    : {};
   await api(`/api/v1/vaults/${vault.id}/rotation`, "POST", {
     expected_key_version: vault.key_version,
     items,
     envelopes,
-    recovery: { nonce: toB64(wrapped.nonce), ciphertext: toB64(wrapped.ciphertext) },
+    recovery: recoveryField,
   });
-  sodium.memzero(org);
-  sodium.memzero(vaultKey);
   return { vaultKey: nextKey, keyVersion: nextVersion };
 }

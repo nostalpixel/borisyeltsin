@@ -536,7 +536,12 @@ func (s *Server) reviewKey(w http.ResponseWriter, r *http.Request, approve bool)
 		for _, member := range memberships {
 			vaultIDs = append(vaultIDs, member.VaultID)
 		}
-		if _, err := lockVaults(r.Context(), q, p.OrgID, vaultIDs); err != nil {
+		// A custodian's new key may degrade recovery, which touches every vault.
+		orgIDs, err := orgVaultIDs(r.Context(), q, p.OrgID)
+		if err != nil {
+			return err
+		}
+		if _, err := lockVaults(r.Context(), q, p.OrgID, append(vaultIDs, orgIDs...)); err != nil {
 			return err
 		}
 		if _, err := q.ReplaceCryptoIdentity(r.Context(), db.ReplaceCryptoIdentityParams{
@@ -560,6 +565,9 @@ func (s *Server) reviewKey(w http.ResponseWriter, r *http.Request, approve bool)
 			if err := q.SetVaultRotationRequired(r.Context(), db.SetVaultRotationRequiredParams{ID: id, RotationRequired: true}); err != nil {
 				return err
 			}
+		}
+		if err := degradeRecoveryFor(r.Context(), q, p.OrgID, p.UserID, subjectID, false); err != nil {
+			return err
 		}
 		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "crypto_replaced", "user", subjectID.String(), map[string]string{"fingerprint": proposal.Fingerprint})
 	})
@@ -755,7 +763,12 @@ func (s *Server) revokeUser(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		ids := make([]uuid.UUID, 0, len(memberships))
+		// Revoking a custodian or a recovery-key creator degrades recovery,
+		// which touches every vault, so lock them all.
+		ids, err := orgVaultIDs(r.Context(), q, p.OrgID)
+		if err != nil {
+			return err
+		}
 		for _, member := range memberships {
 			ids = append(ids, member.VaultID)
 		}
@@ -799,6 +812,9 @@ func (s *Server) revokeUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := q.DeleteEnvelopesForUser(r.Context(), userID); err != nil {
+			return err
+		}
+		if err := degradeRecoveryFor(r.Context(), q, p.OrgID, p.UserID, userID, true); err != nil {
 			return err
 		}
 		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "user_revoked", "user", userID.String(), nil)
