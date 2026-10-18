@@ -13,6 +13,7 @@ type Limiter struct {
 	window time.Duration
 	hits   map[string][]time.Time
 	now    func() time.Time
+	swept  time.Time
 }
 
 // New returns a limiter. A non-positive limit denies every event.
@@ -31,6 +32,7 @@ func (l *Limiter) Allow(key string) bool {
 	defer l.mu.Unlock()
 	now := l.now()
 	cutoff := now.Add(-l.window)
+	l.sweep(now, cutoff)
 	kept := l.hits[key][:0]
 	for _, hit := range l.hits[key] {
 		if hit.After(cutoff) {
@@ -43,4 +45,18 @@ func (l *Limiter) Allow(key string) bool {
 	}
 	l.hits[key] = append(kept, now)
 	return true
+}
+
+// sweep drops keys with no hits inside the window, at most once per window,
+// so keys from one-off callers do not accumulate.
+func (l *Limiter) sweep(now, cutoff time.Time) {
+	if now.Sub(l.swept) < l.window {
+		return
+	}
+	l.swept = now
+	for key, hits := range l.hits {
+		if len(hits) == 0 || !hits[len(hits)-1].After(cutoff) {
+			delete(l.hits, key)
+		}
+	}
 }

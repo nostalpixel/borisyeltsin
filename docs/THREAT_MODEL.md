@@ -8,7 +8,7 @@ This is the boundary of the vault, not a claim that the whole application is zer
 - Identity private keys and the passphrase that wraps them.
 - Vault keys and the organization recovery key.
 - Personal recovery keys and custodian shares.
-- Session cookies.
+- Session cookies and agent tokens.
 - Subscription and payment metadata. Payment methods store a nickname, issuer, last4, and expiry. They do not store a full card number.
 
 ## Mitigations that exist in this repository
@@ -31,6 +31,7 @@ This is the boundary of the vault, not a claim that the whole application is zer
 | Recovery key substitution or rollback | Shares are authenticated boxes from the setting-up admin's verified key and carry the recovery public key; custodians check it before confirming. Browsers pin the recovery key with its epoch and refuse an older epoch or a changed fingerprint. |
 | Recovery by one person | The two custodians must be different users with different keys. Recovery needs both shares in one browser and a server challenge opened with the recombined key; challenges are single-use, expire in 5 minutes, and are limited to 5 per custodian per hour. |
 | Departed custodian | Revoking a custodian, replacing a custodian's key, or revoking the admin who set up the recovery key degrades recovery: it is refused, new passwords are blocked, and the vault needs rotation until a new recovery key is set up. A used recovery key is spent and never reused. |
+| Stolen agent token | Agent tokens (`docs/MCP.md`) reach only `/mcp`, which reads the ledger and, for write tokens, adds subscriptions. They never reach the vault, keys, members or recovery. 32 random bytes, SHA-256 at rest, at most 90 days, revocable, revoked with their owner, and limited to what the owner can see and edit. A token skips Authentik MFA by design, so the risk is ledger disclosure and unwanted subscription rows until it is revoked. |
 
 ## Boundaries
 

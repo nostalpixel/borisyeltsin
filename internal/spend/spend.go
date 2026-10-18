@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// maxWhole is the largest whole amount accepted: one trillion.
+const maxWhole = 1_000_000_000_000
+
 // ParseMinor converts a decimal string with at most two fraction digits into minor units.
 func ParseMinor(raw string) (int64, error) {
 	raw = strings.TrimSpace(raw)
@@ -19,7 +22,8 @@ func ParseMinor(raw string) (int64, error) {
 		return 0, fmt.Errorf("invalid amount")
 	}
 	whole, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
+	// The bound keeps whole*100 and monthly sums far from int64 overflow.
+	if err != nil || whole > maxWhole {
 		return 0, fmt.Errorf("invalid amount")
 	}
 	frac := int64(0)

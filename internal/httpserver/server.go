@@ -51,8 +51,10 @@ type Server struct {
 	Cfg   config.Config
 	Loc   *time.Location
 	Limit *limiter.Limiter
-	OIDC  *oidcClient
-	Now   func() time.Time
+	// MCPLimit counts MCP requests per agent token.
+	MCPLimit *limiter.Limiter
+	OIDC     *oidcClient
+	Now      func() time.Time
 }
 
 func New(pool *pgxpool.Pool, cfg config.Config) *Server {
@@ -67,12 +69,13 @@ func New(pool *pgxpool.Pool, cfg config.Config) *Server {
 		cfg.MFAAMR = []string{"mfa", "otp", "totp", "webauthn"}
 	}
 	return &Server{
-		Pool:  pool,
-		Q:     db.New(pool),
-		Cfg:   cfg,
-		Loc:   loc,
-		Limit: limiter.New(30, time.Minute),
-		Now:   time.Now,
+		Pool:     pool,
+		Q:        db.New(pool),
+		Cfg:      cfg,
+		Loc:      loc,
+		Limit:    limiter.New(30, time.Minute),
+		MCPLimit: limiter.New(120, time.Minute),
+		Now:      time.Now,
 	}
 }
 
@@ -89,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	r.Use(s.securityHeaders)
 	r.Get("/healthz", s.health)
 	r.Get("/readyz", s.ready)
+	r.With(s.withAPIToken).Handle("/mcp", http.MaxBytesHandler(s.mcpHandler(), maxBody))
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/auth/login", s.login)
 		r.Get("/auth/callback", s.callback)
@@ -107,6 +111,9 @@ func (s *Server) Handler() http.Handler {
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireActive)
 				r.Get("/workspace", s.workspace)
+				r.Get("/tokens", s.listTokens)
+				r.Post("/tokens", s.createToken)
+				r.Post("/tokens/{tokenID}/revoke", s.revokeToken)
 				r.Post("/services", s.createService)
 				r.Patch("/services/{serviceID}", s.updateService)
 				r.Post("/services/{serviceID}/archive", s.archiveService)
@@ -179,7 +186,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		// allow eval() or inline scripts.
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/mcp" {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
