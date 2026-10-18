@@ -1,5 +1,17 @@
 ![BorisYeltsin](docs/main_banner.png)
 
+## Release
+
+**Latest: [v0.2.1](https://github.com/nostalpixel/borisyeltsin/tree/v0.2.1)**, early access. Image: `ghcr.io/nostalpixel/borisyeltsin:0.2.1` (`linux/amd64`, `linux/arm64`).
+
+| Version | Changes | Upgrade notes |
+|---|---|---|
+| 0.2.1 | Auto-renewing subscriptions move to their next renewal date instead of showing overdue forever. | No migration. |
+| 0.2.0 | Organization recovery: two custodians and a recovery key can restore vault access ([docs/RECOVERY.md](docs/RECOVERY.md)). | Migration 003 is one-way. Take a `pg_dump` first. Recovery set up on 0.1.0 is removed: set it up again (new passwords are blocked until then). |
+| 0.1.0 | First published image: ledger, shared vault, Authentik sign-in. | |
+
+Early access means: one vault per organization, one server process, and no independent review of the encryption yet. Some ledger screens are missing (payment history, payment methods, auto-renew toggle, spend totals). See [TODOS.md](TODOS.md). Set up recovery on day one: a member who loses their passphrase with no recovery in place loses vault access.
+
 # BorisYeltsin
 
 Subscription ledger and team credential vault for a small organization. One Go process serves the API, the renewal scheduler, and the compiled React application. Postgres stores the ledger in the clear and the vault as ciphertext. People sign in with an external Authentik. There is no local password and no public registration.
@@ -22,7 +34,7 @@ The database URL inside Compose uses `sslmode=disable` on the Docker network. Pu
 
 ### Release images
 
-Tagged releases are published as `ghcr.io/nostalpixel/borisyeltsin` for `linux/amd64` and `linux/arm64`. Set `BORISELTSYN_VERSION` to a release version (for example `0.1.0`) and pull instead of building:
+Tagged releases are published as `ghcr.io/nostalpixel/borisyeltsin` for `linux/amd64` and `linux/arm64`. Set `BORISELTSYN_VERSION` to a release version (for example `0.2.1`) and pull instead of building:
 
 ```bash
 docker compose pull boriseltsyn
