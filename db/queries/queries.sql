@@ -169,13 +169,30 @@ SELECT * FROM crypto_proposals WHERE user_id = $1;
 DELETE FROM crypto_proposals WHERE user_id = $1;
 
 -- name: DeletePendingIdentity :exec
-DELETE FROM crypto_identities WHERE user_id = $1 AND status = 'pending';
+DELETE FROM crypto_identities WHERE user_id = $1 AND status IN ('pending', 'rejected');
 
 -- name: ListRenewalCandidates :many
 SELECT sub.id, s.organization_id, sub.renewal_date
 FROM subscriptions sub
 JOIN services s ON s.id = sub.service_id
 WHERE s.archived_at IS NULL;
+
+-- name: ListKeyProposals :many
+SELECT u.id AS user_id, u.display_name, u.email, p.public_key, p.fingerprint, p.created_at
+FROM crypto_proposals p
+JOIN users u ON u.id = p.user_id
+WHERE u.organization_id = $1
+ORDER BY p.created_at;
+
+-- name: UpdatePassphraseBackup :one
+UPDATE crypto_identities SET
+    kdf_opslimit = sqlc.arg(kdf_opslimit),
+    kdf_memlimit = sqlc.arg(kdf_memlimit),
+    kdf_salt = sqlc.arg(kdf_salt),
+    private_key_nonce = sqlc.arg(private_key_nonce),
+    private_key_ciphertext = sqlc.arg(private_key_ciphertext)
+WHERE user_id = sqlc.arg(user_id) AND status = 'approved' AND fingerprint = sqlc.arg(fingerprint)
+RETURNING *;
 
 -- name: ListPublicKeys :many
 SELECT u.id AS user_id, u.display_name, u.email, u.status AS user_status,
@@ -184,6 +201,12 @@ FROM users u
 JOIN crypto_identities c ON c.user_id = u.id
 WHERE u.organization_id = $1
 ORDER BY u.display_name, u.email;
+
+-- name: CountVaults :one
+SELECT count(*) FROM vaults WHERE organization_id = $1 AND archived_at IS NULL;
+
+-- name: ListEnvelopeHolders :many
+SELECT user_id FROM vault_key_envelopes WHERE vault_id = $1 AND key_version = $2;
 
 -- name: CreateVault :one
 INSERT INTO vaults (organization_id, name, description)

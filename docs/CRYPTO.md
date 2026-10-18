@@ -111,3 +111,7 @@ The server cannot see the vault key, so it enforces who may write and against wh
 - Item edits carry the item `version` they read. A stale edit is refused with 409 `item_conflict`.
 - Rotation must list exactly the live items with their versions (409 `items_changed` or `item_conflict` otherwise), one envelope per member to an approved fingerprint, and a 48-byte recovery secretbox.
 - A vault always keeps an owner: removing, demoting or revoking its last owner is refused with 409 `last_vault_owner`.
+
+## Verifying recipient keys
+
+The server's public-key list is not trusted on its own. Before the browser seals a vault key (sharing, rotation) or a recovery share (custodian setup) to a public key, someone in that browser compares the key's SHA-256 fingerprint with its owner out of band and types the last of its sixteen 4-character groups. The browser then pins `user → fingerprint` in `localStorage` for the signed-in user. A pinned key is used without asking again; a different fingerprint for the same person is shown as a changed key and blocks sealing until it is verified again. Your own key is pinned when you unlock, because the browser has just checked it against the approved fingerprint. Pins are per browser: a new device asks again, which is safe, only slower.

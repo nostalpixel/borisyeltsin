@@ -381,7 +381,9 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
-	if existing.Status == "pending" {
+	// A pending key can be replaced before approval, and a rejected one so the
+	// person can start over. Both still need a different admin's approval.
+	if existing.Status == "pending" || existing.Status == "rejected" {
 		if err := s.Q.DeletePendingIdentity(r.Context(), p.UserID); err != nil {
 			s.sendError(w, err)
 			return
@@ -475,6 +477,21 @@ func (s *Server) reviewKey(w http.ResponseWriter, r *http.Request, approve bool)
 	}
 	action := "crypto_rejected"
 	if !approve {
+		if ident.Status == "approved" {
+			// Rejecting a replacement proposal leaves the approved key in place.
+			proposal, err := s.Q.GetCryptoProposal(r.Context(), subjectID)
+			if err != nil {
+				s.fail(w, http.StatusConflict, "nothing_to_review")
+				return
+			}
+			if err := s.Q.DeleteCryptoProposal(r.Context(), subjectID); err != nil {
+				s.sendError(w, err)
+				return
+			}
+			s.audit(r.Context(), p.OrgID, &p.UserID, "crypto_proposal_rejected", "user", subjectID.String(), map[string]string{"fingerprint": proposal.Fingerprint})
+			s.writeJSON(w, http.StatusOK, map[string]string{"status": "proposal_rejected"})
+			return
+		}
 		if ident.Status != "pending" {
 			s.fail(w, http.StatusConflict, "nothing_to_review")
 			return
@@ -569,6 +586,74 @@ func (s *Server) listKeys(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"keys": out})
+}
+
+// listProposals returns replacement keys waiting for a different admin.
+func (s *Server) listProposals(w http.ResponseWriter, r *http.Request) {
+	p, _ := principalFrom(r)
+	if err := s.requireAdmin(p); err != nil {
+		s.sendError(w, err)
+		return
+	}
+	rows, err := s.Q.ListKeyProposals(r.Context(), p.OrgID)
+	if err != nil {
+		s.sendError(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"user_id": row.UserID, "display_name": row.DisplayName, "email": row.Email,
+			"fingerprint": row.Fingerprint, "public_key": encodeB64(row.PublicKey), "created_at": row.CreatedAt,
+		})
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"proposals": out})
+}
+
+// changePassphrase replaces the passphrase-wrapped copy of the private key.
+// The public key, its approval and every envelope stay as they are. The
+// browser sends the fingerprint it unlocked so a stale tab cannot overwrite
+// the backup of a key that was replaced meanwhile.
+func (s *Server) changePassphrase(w http.ResponseWriter, r *http.Request) {
+	p, _ := principalFrom(r)
+	if !s.Limit.Allow("passphrase:" + p.UserID.String()) {
+		s.fail(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
+	var body struct {
+		Fingerprint          string `json:"fingerprint"`
+		KDFOpslimit          int32  `json:"kdf_opslimit"`
+		KDFMemlimit          int32  `json:"kdf_memlimit"`
+		KDFSalt              string `json:"kdf_salt"`
+		PrivateKeyNonce      string `json:"private_key_nonce"`
+		PrivateKeyCiphertext string `json:"private_key_ciphertext"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	if body.KDFOpslimit < 3 || body.KDFMemlimit < 67108864 {
+		s.fail(w, http.StatusBadRequest, "weak_kdf")
+		return
+	}
+	salt, err1 := decodeB64(body.KDFSalt, 16, 0, 0)
+	nonce, err2 := decodeB64(body.PrivateKeyNonce, 24, 0, 0)
+	ct, err3 := decodeB64(body.PrivateKeyCiphertext, 0, 48, 4096)
+	if err1 != nil || err2 != nil || err3 != nil {
+		s.fail(w, http.StatusBadRequest, "invalid_identity")
+		return
+	}
+	if _, err := s.Q.UpdatePassphraseBackup(r.Context(), db.UpdatePassphraseBackupParams{
+		UserID: p.UserID, Fingerprint: body.Fingerprint, KdfOpslimit: body.KDFOpslimit, KdfMemlimit: body.KDFMemlimit,
+		KdfSalt: salt, PrivateKeyNonce: nonce, PrivateKeyCiphertext: ct,
+	}); isNoRows(err) {
+		s.fail(w, http.StatusConflict, "fingerprint_mismatch")
+		return
+	} else if err != nil {
+		s.sendError(w, err)
+		return
+	}
+	s.audit(r.Context(), p.OrgID, &p.UserID, "passphrase_changed", "user", p.UserID.String(), map[string]string{"fingerprint": body.Fingerprint})
+	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {

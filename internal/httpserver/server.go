@@ -133,6 +133,8 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/invitations", s.createInvitation)
 				r.Post("/invitations/{invitationID}/revoke", s.revokeInvitation)
 				r.Get("/crypto/keys", s.listKeys)
+				r.Get("/crypto/proposals", s.listProposals)
+				r.Put("/crypto/identity/passphrase", s.changePassphrase)
 				r.Get("/audit", s.listAudit)
 				r.Get("/flags", s.listFlags)
 				r.Post("/flags/{flagID}/resolve", s.resolveFlag)
@@ -169,7 +171,10 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		// style-src-attr allows per-service logo colors. Inline style sheets stay blocked.
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		// 'wasm-unsafe-eval' lets libsodium compile its WebAssembly build; without it the
+		// asm.js fallback cannot run Argon2id at 64 MiB and key creation fails. It does not
+		// allow eval() or inline scripts.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
