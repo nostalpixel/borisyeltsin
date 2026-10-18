@@ -24,7 +24,7 @@ Any MCP client that speaks Streamable HTTP and can send a bearer header works th
 | `monthly_bill` | read | Monthly total per currency and the subscriptions behind it, largest first. Optional `category`. Quarterly, annual and custom cycles are spread over a month. Currencies are never converted. |
 | `upcoming_renewals` | read | Subscriptions renewing in the next `days` (default 30, up to 366), soonest first. Overdue ones have negative days. |
 | `list_subscriptions` | read | Every subscription, optionally filtered by service name. |
-| `add_subscription` | write tokens only | Adds a subscription to the named service, creating the service if no service has that name. Put the plan and seat count in `name`, for example `Team, 2 users`. |
+| `add_subscription` | write tokens only | Adds a subscription to the named service, creating the service if no service has that name. Put the plan and seat count in `name`, for example `Team, 2 users`. Refuses when the name matches an archived service. |
 
 A read-only token does not list `add_subscription` at all.
 
@@ -45,7 +45,8 @@ A token acts as the person who created it, with that person's current role and g
 ## Limits and records
 
 - At most 10 active tokens per person. Lifetime 1 to 90 days.
-- 120 MCP requests per minute per token. Failed bearer attempts are rate-limited per client address.
+- 120 MCP requests per minute per token, and per client address before the token is checked. Failed bearer attempts are limited further per address. With `TRUST_PROXY=true` the address comes from `X-Forwarded-For`, so only enable it behind a proxy that overwrites that header.
+- Tool errors the agent sees are short messages; database errors are logged on the server and reported as `internal error`.
 - Creating and revoking a token is recorded in the audit log. Services and subscriptions an agent creates are recorded with `via: mcp` and the token's id. The token list shows when each token was last used.
 - People revoke their own tokens on the Agents page; an admin can show and revoke everyone's.
 

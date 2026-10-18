@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -18,6 +19,21 @@ import (
 // The MCP endpoint (docs/MCP.md) answers "what renews when, and what does it
 // cost" for an agent holding a personal token. It reads the ledger only: no
 // vault items, envelopes, login hints, card labels or payment methods.
+
+// toolError is a message meant for the agent. Any other error is logged and
+// reported as "internal error", so database details never reach the client.
+type toolError string
+
+func (e toolError) Error() string { return string(e) }
+
+func agentErr(err error) error {
+	var te toolError
+	if err == nil || errors.As(err, &te) {
+		return err
+	}
+	slog.Error("mcp tool failed", "error", err)
+	return toolError("internal error")
+}
 
 type agentToken struct {
 	ID       uuid.UUID
@@ -60,7 +76,7 @@ func (s *Server) mcpServer(agent agentCtx) *mcp.Server {
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in billInput) (*mcp.CallToolResult, billOutput, error) {
 		out, err := s.monthlyBill(ctx, agent.p, in)
-		return nil, out, err
+		return nil, out, agentErr(err)
 	})
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "upcoming_renewals",
@@ -68,7 +84,7 @@ func (s *Server) mcpServer(agent agentCtx) *mcp.Server {
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in renewalsInput) (*mcp.CallToolResult, subscriptionsOutput, error) {
 		out, err := s.upcomingRenewals(ctx, agent.p, in)
-		return nil, out, err
+		return nil, out, agentErr(err)
 	})
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_subscriptions",
@@ -76,7 +92,7 @@ func (s *Server) mcpServer(agent agentCtx) *mcp.Server {
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, subscriptionsOutput, error) {
 		out, err := s.listAgentSubscriptions(ctx, agent.p, in)
-		return nil, out, err
+		return nil, out, agentErr(err)
 	})
 	if agent.token.CanWrite {
 		mcp.AddTool(server, &mcp.Tool{
@@ -86,7 +102,7 @@ func (s *Server) mcpServer(agent agentCtx) *mcp.Server {
 			Annotations: &mcp.ToolAnnotations{IdempotentHint: false},
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, in addInput) (*mcp.CallToolResult, addOutput, error) {
 			out, err := s.addAgentSubscription(ctx, agent, in)
-			return nil, out, err
+			return nil, out, agentErr(err)
 		})
 	}
 	return server
@@ -211,7 +227,7 @@ func (s *Server) today() string {
 
 func (s *Server) monthlyBill(ctx context.Context, p Principal, in billInput) (billOutput, error) {
 	if in.Category != "" && !authz.ValidCategory(in.Category) {
-		return billOutput{}, errors.New("unknown category")
+		return billOutput{}, toolError("unknown category")
 	}
 	services, subs, err := s.agentLedger(ctx, p)
 	if err != nil {
@@ -256,7 +272,7 @@ func (s *Server) upcomingRenewals(ctx context.Context, p Principal, in renewalsI
 		in.Days = 30
 	}
 	if in.Days < 1 || in.Days > 366 {
-		return subscriptionsOutput{}, errors.New("days must be between 1 and 366")
+		return subscriptionsOutput{}, toolError("days must be between 1 and 366")
 	}
 	services, subs, err := s.agentLedger(ctx, p)
 	if err != nil {
@@ -296,20 +312,20 @@ func (s *Server) addAgentSubscription(ctx context.Context, agent agentCtx, in ad
 	p := agent.p
 	name := clip(in.Service, 160)
 	if name == "" {
-		return addOutput{}, errors.New("service is required")
+		return addOutput{}, toolError("service is required")
 	}
 	if in.RenewalDate == "" {
-		return addOutput{}, errors.New("renewal_date is required, as YYYY-MM-DD")
+		return addOutput{}, toolError("renewal_date is required, as YYYY-MM-DD")
 	}
 	if strings.TrimSpace(in.Cost) == "" {
-		return addOutput{}, errors.New("cost is required")
+		return addOutput{}, toolError("cost is required")
 	}
 	params, _, err := s.billing(ctx, p, accountBody{
 		BillingCycle: in.BillingCycle, RenewalDate: in.RenewalDate, Cost: in.Cost,
 		Currency: strings.ToUpper(strings.TrimSpace(in.Currency)), AutoRenew: in.AutoRenew, CustomIntervalDays: in.CustomDays,
 	})
 	if err != nil {
-		return addOutput{}, errors.New("invalid subscription: check cost, currency, billing_cycle, custom_interval_days and renewal_date")
+		return addOutput{}, toolError("invalid subscription: check cost, currency, billing_cycle, custom_interval_days and renewal_date")
 	}
 	params.Name = clip(in.Name, 160)
 	if err := screenAgentText(params.Name); err != nil {
@@ -326,8 +342,17 @@ func (s *Server) addAgentSubscription(ctx context.Context, agent agentCtx, in ad
 			matches = append(matches, svc)
 		}
 	}
+	if len(matches) == 0 {
+		archived, err := s.archivedNamed(ctx, p, name)
+		if err != nil {
+			return addOutput{}, err
+		}
+		if archived {
+			return addOutput{}, toolError("a service with that name is archived; unarchive it in the app first")
+		}
+	}
 	if len(matches) > 1 {
-		return addOutput{}, errors.New("several services have that name; rename one in the app first")
+		return addOutput{}, toolError("several services have that name; rename one in the app first")
 	}
 	created := false
 	var svc db.Service
@@ -338,15 +363,15 @@ func (s *Server) addAgentSubscription(ctx context.Context, agent agentCtx, in ad
 			return addOutput{}, err
 		}
 		if !ok {
-			return addOutput{}, errors.New("you cannot edit this service")
+			return addOutput{}, toolError("you cannot edit this service")
 		}
 	} else {
 		if p.Role != "admin" && p.Role != "manager" {
-			return addOutput{}, errors.New("no service has that name, and only admins and managers can create one")
+			return addOutput{}, toolError("no service has that name, and only admins and managers can create one")
 		}
 		body, err := validateService(serviceBody{Name: name, Category: in.Category, Tags: []string{}})
 		if err != nil {
-			return addOutput{}, errors.New("invalid service name or category")
+			return addOutput{}, toolError("invalid service name or category")
 		}
 		owner := p.UserID
 		svc, err = s.Q.CreateService(ctx, db.CreateServiceParams{
@@ -372,7 +397,27 @@ func (s *Server) addAgentSubscription(ctx context.Context, agent agentCtx, in ad
 // screenAgentText applies the ledger's card-number screen to free text.
 func screenAgentText(values ...string) error {
 	if err := fieldsafe.ScreenText(values...); err != nil {
-		return errors.New("this looks like a full card number; keep only a name and the last 4 digits")
+		return toolError("this looks like a full card number; keep only a name and the last 4 digits")
 	}
 	return nil
+}
+
+// archivedNamed reports whether the principal can see an archived service
+// with this name, so the agent does not create a silent duplicate.
+func (s *Server) archivedNamed(ctx context.Context, p Principal, name string) (bool, error) {
+	all, err := s.Q.ListServicesForOrg(ctx, p.OrgID)
+	if err != nil {
+		return false, err
+	}
+	grantSet, err := s.grants(ctx, p.OrgID)
+	if err != nil {
+		return false, err
+	}
+	for _, svc := range all {
+		if svc.ArchivedAt.Valid && strings.EqualFold(svc.Name, name) &&
+			authz.CanViewService(p.Role, p.UserID, svc.OwnerID, grantSet[svc.ID][p.UserID]) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

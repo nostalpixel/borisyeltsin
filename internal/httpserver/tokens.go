@@ -145,6 +145,12 @@ func (s *Server) withAPIToken(next http.Handler) http.Handler {
 			deny()
 			return
 		}
+		// Every attempt is counted per address before the lookup, so unknown
+		// tokens cannot buy unlimited hashes and queries.
+		if !s.MCPLimit.Allow("mcp-ip:" + s.clientIP(r)) {
+			s.fail(w, http.StatusTooManyRequests, "rate_limited")
+			return
+		}
 		row, err := s.Q.GetActiveAPIToken(r.Context(), token.Hash(raw))
 		if err != nil {
 			if !s.Limit.Allow("mcp-fail:" + s.clientIP(r)) {

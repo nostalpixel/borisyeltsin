@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -298,4 +299,111 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+func TestAgentErrorsHideInternals(t *testing.T) {
+	if got := agentErr(errors.New(`ERROR: violates check constraint "cost_chk" (SQLSTATE 23514)`)); got.Error() != "internal error" {
+		t.Fatalf("leaked %q", got)
+	}
+	if got := agentErr(toolError("cost is required")); got.Error() != "cost is required" {
+		t.Fatalf("lost message %q", got)
+	}
+	f := newMCPFixture(t)
+	cs := f.session(t, f.token(t, &f.admin, true))
+	out, ok := callTool(t, cs, "add_subscription", map[string]any{"service": "Big", "cost": "92233720368547759", "renewal_date": "2026-11-15"})
+	if ok || strings.Contains(out["error"].(string), "SQLSTATE") {
+		t.Fatalf("overflowing cost: %+v", out)
+	}
+}
+
+func TestAgentTokensStayInTheirOrganization(t *testing.T) {
+	f := newMCPFixture(t)
+	plain := f.token(t, &f.admin, false)
+	row, _ := f.q.GetActiveAPIToken(context.Background(), token.Hash(plain))
+	other, err := f.q.CreateOrganization(context.Background(), "Other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger := f.srv.addUser(t, f.q, other.ID, "admin", "active")
+	if rec := call(f.h, http.MethodGet, "/api/v1/tokens?all=1", nil, &stranger); strings.Contains(rec.Body.String(), row.ID.String()) {
+		t.Fatal("another organization's admin lists the token")
+	}
+	if rec := call(f.h, http.MethodPost, "/api/v1/tokens/"+row.ID.String()+"/revoke", map[string]any{}, &stranger); rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-org revoke %d", rec.Code)
+	}
+	f.session(t, plain)
+}
+
+func TestDemotedOwnerLosesTheWriteTool(t *testing.T) {
+	f := newMCPFixture(t)
+	manager := f.srv.addUser(t, f.q, f.org.ID, "manager", "active")
+	plain := f.token(t, &manager, true)
+	if _, err := f.srv.Pool.Exec(context.Background(), "UPDATE users SET role = 'readonly' WHERE id = $1", manager.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := f.session(t, plain).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name == "add_subscription" {
+			t.Fatal("demoted owner still has the write tool")
+		}
+	}
+}
+
+func TestManagerCannotWriteToServicesItCannotSee(t *testing.T) {
+	f := newMCPFixture(t)
+	private := f.service(t, "Payroll", f.admin.user.ID)
+	manager := f.srv.addUser(t, f.q, f.org.ID, "manager", "active")
+	cs := f.session(t, f.token(t, &manager, true))
+	callTool(t, cs, "add_subscription", map[string]any{"service": "Payroll", "cost": "10", "renewal_date": "2026-11-01"})
+	var onPrivate int
+	if err := f.srv.Pool.QueryRow(context.Background(), "SELECT count(*) FROM subscriptions WHERE service_id = $1", private.ID).Scan(&onPrivate); err != nil {
+		t.Fatal(err)
+	}
+	if onPrivate != 0 {
+		t.Fatal("manager wrote to a service it cannot see")
+	}
+}
+
+func TestArchivedServiceIsNotDuplicated(t *testing.T) {
+	f := newMCPFixture(t)
+	svc := f.service(t, "Zoom", f.admin.user.ID)
+	if _, err := f.srv.Pool.Exec(context.Background(), "UPDATE services SET archived_at = now() WHERE id = $1", svc.ID); err != nil {
+		t.Fatal(err)
+	}
+	cs := f.session(t, f.token(t, &f.admin, true))
+	if out, ok := callTool(t, cs, "add_subscription", map[string]any{"service": "zoom", "cost": "15", "renewal_date": "2026-11-01"}); ok || !strings.Contains(out["error"].(string), "archived") {
+		t.Fatalf("archived duplicate: %+v", out)
+	}
+}
+
+func TestMCPRejectsGetAndOversizedBodies(t *testing.T) {
+	f := newMCPFixture(t)
+	plain := f.token(t, &f.admin, false)
+	req, _ := http.NewRequest(http.MethodGet, f.http.URL+"/mcp", nil)
+	req.Header.Set("Authorization", "Bearer "+plain)
+	req.Header.Set("Accept", "text/event-stream")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET %d", res.StatusCode)
+	}
+	big := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"pad":"` + strings.Repeat("x", 2<<20) + `"}}`
+	req, _ = http.NewRequest(http.MethodPost, f.http.URL+"/mcp", strings.NewReader(big))
+	req.Header.Set("Authorization", "Bearer "+plain)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode < 400 {
+		t.Fatalf("2 MiB body accepted: %d", res.StatusCode)
+	}
 }
