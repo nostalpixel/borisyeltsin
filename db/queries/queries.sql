@@ -13,9 +13,6 @@ INSERT INTO organizations (name) VALUES ($1) RETURNING *;
 -- name: GetOrganization :one
 SELECT * FROM organizations WHERE id = $1;
 
--- name: SetRecoveryReady :exec
-UPDATE organizations SET recovery_ready = $2 WHERE id = $1;
-
 -- name: CountUsers :one
 SELECT count(*)::bigint FROM users WHERE organization_id = $1;
 
@@ -320,35 +317,120 @@ RETURNING *;
 UPDATE vault_items SET deleted_at = now(), updated_by = $3, updated_at = now()
 WHERE id = $1 AND vault_id = $2 AND deleted_at IS NULL;
 
--- name: DeleteCustodians :exec
-DELETE FROM recovery_custodians WHERE organization_id = $1;
+-- name: GetCurrentEpoch :one
+SELECT * FROM recovery_epochs
+WHERE organization_id = $1 AND status IN ('active', 'degraded', 'spent');
+
+-- name: GetNextEpoch :one
+SELECT * FROM recovery_epochs
+WHERE organization_id = $1 AND status IN ('pending', 'confirmed');
+
+-- name: GetEpoch :one
+SELECT * FROM recovery_epochs WHERE organization_id = $1 AND epoch = $2;
+
+-- name: LockEpoch :one
+SELECT * FROM recovery_epochs WHERE organization_id = $1 AND epoch = $2 FOR UPDATE;
+
+-- name: MaxEpoch :one
+SELECT COALESCE(MAX(epoch), 0)::integer FROM recovery_epochs WHERE organization_id = $1;
+
+-- name: InsertEpoch :one
+INSERT INTO recovery_epochs (
+    organization_id, epoch, public_key, fingerprint, created_by, creator_public_key, creator_fingerprint
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING *;
+
+-- name: SetEpochStatus :exec
+UPDATE recovery_epochs SET status = $3 WHERE organization_id = $1 AND epoch = $2;
+
+-- name: RetireNextEpoch :exec
+UPDATE recovery_epochs SET status = 'retired'
+WHERE organization_id = $1 AND status IN ('pending', 'confirmed');
+
+-- name: RetireCurrentEpoch :exec
+UPDATE recovery_epochs SET status = 'retired'
+WHERE organization_id = $1 AND status IN ('active', 'degraded', 'spent');
 
 -- name: InsertCustodian :exec
-INSERT INTO recovery_custodians (organization_id, user_id, share_index, share_ciphertext, fingerprint)
-VALUES ($1, $2, $3, $4, $5);
+INSERT INTO recovery_custodians (
+    organization_id, epoch, share_index, user_id, fingerprint, share_nonce, share_ciphertext
+) VALUES ($1, $2, $3, $4, $5, $6, $7);
 
--- name: ListCustodians :many
-SELECT c.organization_id, c.user_id, c.share_index, c.fingerprint, c.created_at, u.display_name, u.email
+-- name: ListEpochCustodians :many
+SELECT c.share_index, c.user_id, c.fingerprint, c.confirmed_at,
+       u.display_name, u.email, u.status AS user_status
 FROM recovery_custodians c
 JOIN users u ON u.id = c.user_id
-WHERE c.organization_id = $1
+WHERE c.organization_id = $1 AND c.epoch = $2
 ORDER BY c.share_index;
 
--- name: GetCustodianShare :one
-SELECT share_index, share_ciphertext, fingerprint
-FROM recovery_custodians
-WHERE organization_id = $1 AND user_id = $2;
+-- name: GetEpochCustodian :one
+SELECT * FROM recovery_custodians
+WHERE organization_id = $1 AND epoch = $2 AND user_id = $3;
+
+-- name: ConfirmCustodian :execrows
+UPDATE recovery_custodians SET confirmed_at = now()
+WHERE organization_id = $1 AND epoch = $2 AND user_id = $3 AND confirmed_at IS NULL;
+
+-- name: CountConfirmedCustodians :one
+SELECT count(*)::integer FROM recovery_custodians
+WHERE organization_id = $1 AND epoch = $2 AND confirmed_at IS NOT NULL;
+
+-- name: ListEpochsInvolvingUser :many
+SELECT e.epoch, e.status, (e.created_by = sqlc.arg(user_id))::boolean AS is_creator,
+       EXISTS (
+           SELECT 1 FROM recovery_custodians c
+           WHERE c.organization_id = e.organization_id AND c.epoch = e.epoch AND c.user_id = sqlc.arg(user_id)
+       )::boolean AS is_custodian
+FROM recovery_epochs e
+WHERE e.organization_id = sqlc.arg(organization_id) AND e.status <> 'retired';
 
 -- name: UpsertRecoveryEnvelope :exec
-INSERT INTO vault_recovery_envelopes (vault_id, key_version, nonce, ciphertext)
+INSERT INTO vault_recovery_envelopes (vault_id, key_version, epoch, ciphertext)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (vault_id, key_version) DO UPDATE SET nonce = EXCLUDED.nonce, ciphertext = EXCLUDED.ciphertext;
+ON CONFLICT (vault_id, key_version) DO UPDATE SET epoch = EXCLUDED.epoch, ciphertext = EXCLUDED.ciphertext;
 
 -- name: GetRecoveryEnvelope :one
 SELECT * FROM vault_recovery_envelopes WHERE vault_id = $1 AND key_version = $2;
 
 -- name: DeleteRecoveryEnvelopesExceptVersion :exec
 DELETE FROM vault_recovery_envelopes WHERE vault_id = $1 AND key_version <> $2;
+
+-- name: DeleteRecoveryEnvelopesForVault :exec
+DELETE FROM vault_recovery_envelopes WHERE vault_id = $1;
+
+-- name: DeleteOrgRecoveryEnvelopesExceptEpoch :exec
+DELETE FROM vault_recovery_envelopes e
+USING vaults v
+WHERE v.id = e.vault_id AND v.organization_id = $1 AND e.epoch <> $2;
+
+-- name: CountRecentChallenges :one
+SELECT count(*)::integer FROM recovery_challenges
+WHERE custodian_id = $1 AND created_at > $2;
+
+-- name: InsertChallenge :exec
+INSERT INTO recovery_challenges (id, organization_id, vault_id, epoch, custodian_id, digest, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: ClaimChallenge :one
+UPDATE recovery_challenges SET used_at = now()
+WHERE id = $1 AND custodian_id = $2 AND used_at IS NULL AND expires_at > now()
+RETURNING *;
+
+-- name: InsertRecoveryGrant :one
+INSERT INTO recovery_grants (organization_id, vault_id, epoch, custodian_id, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: GetLiveRecoveryGrant :one
+SELECT * FROM recovery_grants
+WHERE custodian_id = $1 AND vault_id = $2 AND used_at IS NULL AND expires_at > now()
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: UseRecoveryGrant :execrows
+UPDATE recovery_grants SET used_at = now()
+WHERE id = $1 AND used_at IS NULL AND expires_at > now();
 
 -- name: CreateService :one
 INSERT INTO services (

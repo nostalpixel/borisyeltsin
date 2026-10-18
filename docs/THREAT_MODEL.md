@@ -28,6 +28,9 @@ This is the boundary of the vault, not a claim that the whole application is zer
 | Offline passphrase guessing | Argon2id at opslimit 3 and 64 MiB. A weak passphrase still falls quickly. The server rate-limits login and enrollment per process. It cannot rate-limit an offline attack on a stolen backup. |
 | Revoked member | Revocation drops sessions, memberships, and envelopes, and marks the vault for rotation. Secrets that person already copied are outside this system. |
 | Lost keys | Personal recovery key, or both organization shares together. See `RECOVERY.md`. |
+| Recovery key substitution or rollback | Shares are authenticated boxes from the setting-up admin's verified key and carry the recovery public key; custodians check it before confirming. Browsers pin the recovery key with its epoch and refuse an older epoch or a changed fingerprint. |
+| Recovery by one person | The two custodians must be different users with different keys. Recovery needs both shares in one browser and a server challenge opened with the recombined key; challenges are single-use, expire in 5 minutes, and are limited to 5 per custodian per hour. |
+| Departed custodian | Revoking a custodian, replacing a custodian's key, or revoking the admin who set up the recovery key degrades recovery: it is refused, new passwords are blocked, and the vault needs rotation until a new recovery key is set up. A used recovery key is spent and never reused. |
 
 ## Boundaries
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { groupFingerprint, pinState } from "./crypto/pins";
+import { groupFingerprint, pinState, type PinState } from "./crypto/pins";
 
 // Fingerprint renders a value as 4-character mono groups that wrap only
 // between groups, for reading aloud.
@@ -22,6 +22,11 @@ type Props = {
   name: string;
   fingerprint: string;
   confirmLabel?: string;
+  // The recovery key is verified with the same dialog; it passes its own
+  // wording and pin state (which also knows about epochs).
+  title?: string;
+  prompt?: string;
+  pin?: PinState;
   onConfirm: () => Promise<void>;
   onClose: () => void;
 };
@@ -29,9 +34,9 @@ type Props = {
 // VerifyKeyDialog is the one place a key becomes trusted. The person compares
 // the fingerprint out of band and proves they looked by typing its last
 // group. A key that differs from an earlier pin is shown as a block first.
-export function VerifyKeyDialog({ viewerId, userId, name, fingerprint, confirmLabel = "Fingerprints match", onConfirm, onClose }: Props) {
+export function VerifyKeyDialog({ viewerId, userId, name, fingerprint, confirmLabel = "Fingerprints match", title, prompt, pin: pinOverride, onConfirm, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const pin = pinState(viewerId, userId, fingerprint);
+  const pin = pinOverride ?? pinState(viewerId, userId, fingerprint);
   const [acknowledged, setAcknowledged] = useState(pin.state !== "changed");
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,7 +57,7 @@ export function VerifyKeyDialog({ viewerId, userId, name, fingerprint, confirmLa
             <span className="glyph" aria-hidden="true">
               ▲
             </span>
-            {first}'s key changed
+            {title ? `${title}: changed` : `${first}'s key changed`}
           </h2>
           <p className="prose">
             This key is different from the one you verified on {pin.at}. Someone may have replaced it, or {first} set up a new key. Do not share anything
@@ -84,8 +89,8 @@ export function VerifyKeyDialog({ viewerId, userId, name, fingerprint, confirmLa
               .finally(() => setBusy(false));
           }}
         >
-          <h2 id="verify-title">Verify {first}'s key</h2>
-          <p className="prose">Ask {first} to read the fingerprint from their screen, on a call or in person. Every group must match.</p>
+          <h2 id="verify-title">{title ?? `Verify ${first}'s key`}</h2>
+          <p className="prose">{prompt ?? `Ask ${first} to read the fingerprint from their screen, on a call or in person. Every group must match.`}</p>
           <Fingerprint value={fingerprint} />
           <label className="field">
             <span>Type the last group ({last.length} characters)</span>

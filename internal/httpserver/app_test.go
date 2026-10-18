@@ -411,11 +411,11 @@ func TestRotationKeepsAccountLink(t *testing.T) {
 	if env.Code != http.StatusOK {
 		t.Fatalf("envelope %d %s", env.Code, env.Body.String())
 	}
-	if err := q.SetRecoveryReady(context.Background(), db.SetRecoveryReadyParams{ID: org.ID, RecoveryReady: true}); err != nil {
-		t.Fatal(err)
-	}
+	second := srv.addUser(t, q, org.ID, "member", "active")
+	approveKey(t, q, second.user.ID)
+	recKey := seedRecovery(t, q, org.ID, admin.user.ID, admin.user.ID, second.user.ID)
 	recEnv := call(h, http.MethodPost, "/api/v1/vaults/"+vaultID+"/recovery-envelope", map[string]any{
-		"nonce": b64(24), "ciphertext": b64(48), "expected_key_version": 1,
+		"epoch": recKey.epoch, "ciphertext": b64(160), "expected_key_version": 1,
 	}, &admin)
 	if recEnv.Code != http.StatusOK {
 		t.Fatalf("recovery envelope %d %s", recEnv.Code, recEnv.Body.String())
@@ -453,7 +453,7 @@ func TestRotationKeepsAccountLink(t *testing.T) {
 		"envelopes": []map[string]string{{
 			"user_id": admin.user.ID.String(), "fingerprint": ident.Fingerprint, "ciphertext": pub["recovery_ciphertext"].(string),
 		}},
-		"recovery": map[string]string{"nonce": b64(24), "ciphertext": b64(48)},
+		"recovery": recoveryBody(t, q, org.ID),
 	}, &admin)
 	if rotated.Code != http.StatusOK {
 		t.Fatalf("rotate %d %s", rotated.Code, rotated.Body.String())

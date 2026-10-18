@@ -60,7 +60,7 @@ It prints `BOOTSTRAP_INVITE_TOKEN=` to that terminal only; the server log never 
 
 Paste the token on the login page. The browser stores it in an HttpOnly cookie and sends the person to Authentik. After MFA, the browser generates an X25519 key, asks for a passphrase of at least 12 characters, and shows a personal recovery key once. The sole user may approve their own key. Every later key needs a different active admin.
 
-Vault passwords cannot be saved until two members with approved keys become recovery custodians. The ledger works before that.
+New vault passwords cannot be saved until organization recovery is set up: an admin picks two custodians with approved keys, both confirm their shares, and a vault owner seals the vault key to the recovery key. The ledger works before that.
 
 Read [docs/RECOVERY.md](docs/RECOVERY.md) before storing a real password. If the passphrase, the personal recovery key, and both organization shares are lost, the vault cannot be opened.
 

@@ -4,7 +4,7 @@ BorisYeltsin uses libsodium constructions only. This document records the choice
 
 Do not put real organizational credentials in the vault until someone other than the implementer has reviewed this design.
 
-**Review status.** The "Organization recovery" section describes recovery format 2, which is not implemented yet. It replaces format 1 (a symmetric key split between custodians), which needed both shares for every routine rotation. Format 2 is written down first so it can be reviewed before code lands. Everything else in this document describes code that ships today.
+**Review status.** "Organization recovery" describes recovery format 2, which replaced format 1 (a symmetric key split between custodians that every routine rotation needed). Format 2 was reviewed and accepted before its code landed (PR #5).
 
 ## Library
 
@@ -178,7 +178,7 @@ Public-key replacement does not decrypt anything. Recovery does not skip the fin
 
 `web/src/crypto/vault.test.ts` covers the KDF floor, one production Argon2id stretch, secretbox round-trip, recovery-key secretbox, sealed vault-key mismatch, item additional data, and the XOR split with sealed shares. Format 2 adds: split and recombine of a real recovery private key with the derived public key check, a share box from a non-pinned sender refused, a share whose embedded public key differs refused, and a recovery envelope opened with the recombined key.
 
-Format 2 Go tests: challenge sealed with `SealAnonymous` opens with libsodium-compatible output (a fixed test vector from the browser code), a wrong or reused response refused, an expired grant refused, a grant for another vault refused, rotation under a grant makes the custodian an owner and consumes the grant, confirmation with a wrong fingerprint refused, activation only after both confirmations, and revoking a custodian clears readiness and sets `rotation_required`.
+Format 2 Go tests: challenge sealed with `SealAnonymous` opens with libsodium-compatible output (a fixed test vector from the browser code), a wrong or reused response refused, an expired challenge or grant refused, the sixth challenge in an hour refused, a grant for another vault refused, rotation under a grant makes the custodian an owner and consumes the grant, confirmation with a wrong fingerprint refused, activation only after both confirmations, and revoking a custodian clears readiness and sets `rotation_required`.
 
 Go tests cover authorization, invitation single-use, secret rejection, envelope rotation that keeps the account link, and revocation. They do not reimplement the ciphers.
 
