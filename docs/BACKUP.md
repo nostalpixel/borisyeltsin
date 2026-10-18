@@ -22,6 +22,18 @@ Stop the application container before a restore so it is not writing. Start it a
 
 A restore brings old session rows back. Revoke users or delete sessions if those cookies should be dead. See `RECOVERY.md`.
 
+### Restore drill
+
+A dump you have never restored is a guess. Run the drill from the directory that holds `docker-compose.yml`:
+
+```bash
+scripts/restore-drill.sh
+```
+
+It dumps the live database, restores the dump into a scratch database in the same Postgres container, compares row counts for every table, and drops the scratch database. The live database is only read, and the application keeps running. Run it at a quiet moment: a write between the count and the dump shows up as a mismatch, and the drill then fails. CI runs the same script on every push.
+
+The drill proves the dump restores. It does not prove anyone can still open the vault. That needs the keys listed below.
+
 Copying the `postgres-data` volume is a cold backup only when Postgres is stopped. A copy of a running data directory can be torn. Prefer `pg_dump`.
 
 ## Service export
