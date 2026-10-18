@@ -790,6 +790,11 @@ dialog h2 {
 .data-row.audit {
   grid-template-columns: 190px minmax(160px, 1fr) minmax(100px, 0.5fr);
 }
+/* Agent tokens share the split layout with a form, so the columns are narrower. */
+.data-head.tokens,
+.data-row.tokens {
+  grid-template-columns: minmax(140px, 1.4fr) minmax(70px, 0.6fr) minmax(110px, 1fr) auto;
+}
 .data-head {
   border-bottom: 1px solid var(--line);
   font-size: 12px;
@@ -906,7 +911,8 @@ dialog.verify {
     display: none;
   }
   .data-row,
-  .data-row.audit {
+  .data-row.audit,
+  .data-row.tokens {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--s1);
   }
@@ -931,4 +937,16 @@ dialog.verify {
   width: 18px;
   height: 18px;
   accent-color: var(--primary);
+}
+
+/* Agent token and setup command: one copyable block, wraps anywhere. */
+.token-box {
+  display: block;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2, var(--bg));
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  user-select: all;
 }

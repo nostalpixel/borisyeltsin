@@ -56,6 +56,8 @@ const messages: Record<string, string> = {
   forbidden: "You do not have permission.",
   not_found: "Not found.",
   rate_limited: "Too many attempts. Wait a minute.",
+  bad_token: "Give the token a name and a lifetime of 1 to 90 days.",
+  too_many_tokens: "You already have 10 active tokens. Revoke one first.",
   fingerprint_mismatch: "The key fingerprint does not match.",
   envelope_mismatch: "This envelope belongs to a different vault.",
   key_not_approved: "The key is not approved yet.",

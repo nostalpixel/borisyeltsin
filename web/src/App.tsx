@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { ApiError, api, clearCsrf, explain, setCsrf } from "./api";
 import { secretKey, splitBackup } from "./import";
+import { AgentsPage } from "./agents";
 import { TeamPage } from "./team";
 import type { Account, SessionUser, WorkspaceData } from "./types";
 import type { OpenVault } from "./vault";
@@ -9,7 +10,7 @@ import { CategoryNav, Workspace } from "./workspace";
 
 const VaultPage = lazy(() => import("./vault").then((mod) => ({ default: mod.VaultPage })));
 
-type View = "services" | "vault" | "team";
+type View = "services" | "vault" | "team" | "agents";
 
 export function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
@@ -39,7 +40,7 @@ export function App() {
 
   useEffect(() => {
     const hash = window.location.hash.replace("#/", "");
-    if (hash === "vault" || hash === "team" || hash === "services") setView(hash);
+    if (hash === "vault" || hash === "team" || hash === "services" || hash === "agents") setView(hash);
     loadSession();
   }, []);
 
@@ -166,6 +167,11 @@ export function App() {
                 Team
               </button>
             )}
+            {user.status === "active" && (
+              <button className={view === "agents" ? "active" : ""} onClick={() => choose("agents")}>
+                Agents
+              </button>
+            )}
           </nav>
         </div>
         {view === "services" && data && (
@@ -231,6 +237,7 @@ export function App() {
           </Suspense>
         )}
         {view === "team" && user.role === "admin" && <TeamPage selfId={user.id} />}
+        {view === "agents" && user.status === "active" && <AgentsPage isAdmin={user.role === "admin"} readOnly={user.role === "readonly"} />}
       </main>
     </div>
   );

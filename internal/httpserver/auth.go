@@ -798,6 +798,9 @@ func (s *Server) revokeUser(w http.ResponseWriter, r *http.Request) {
 		if err := q.RevokeSessionsForUser(r.Context(), userID); err != nil {
 			return err
 		}
+		if err := q.RevokeAPITokensForUser(r.Context(), userID); err != nil {
+			return err
+		}
 		for _, member := range memberships {
 			if err := q.DeleteVaultMember(r.Context(), db.DeleteVaultMemberParams{VaultID: member.VaultID, UserID: userID}); err != nil {
 				return err

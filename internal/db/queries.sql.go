@@ -260,6 +260,18 @@ func (q *Queries) CountConfirmedCustodians(ctx context.Context, arg CountConfirm
 	return column_1, err
 }
 
+const countLiveAPITokens = `-- name: CountLiveAPITokens :one
+SELECT count(*) FROM api_tokens
+WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
+`
+
+func (q *Queries) CountLiveAPITokens(ctx context.Context, userID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countLiveAPITokens, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countOrganizations = `-- name: CountOrganizations :one
 SELECT count(*)::bigint FROM organizations
 `
@@ -308,6 +320,53 @@ func (q *Queries) CountVaults(ctx context.Context, organizationID uuid.UUID) (in
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createAPIToken = `-- name: CreateAPIToken :one
+INSERT INTO api_tokens (organization_id, user_id, name, token_hash, can_write, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, name, can_write, created_at, expires_at, last_used_at, revoked_at
+`
+
+type CreateAPITokenParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	UserID         uuid.UUID `json:"user_id"`
+	Name           string    `json:"name"`
+	TokenHash      []byte    `json:"token_hash"`
+	CanWrite       bool      `json:"can_write"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+type CreateAPITokenRow struct {
+	ID         uuid.UUID          `json:"id"`
+	Name       string             `json:"name"`
+	CanWrite   bool               `json:"can_write"`
+	CreatedAt  time.Time          `json:"created_at"`
+	ExpiresAt  time.Time          `json:"expires_at"`
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+}
+
+func (q *Queries) CreateAPIToken(ctx context.Context, arg CreateAPITokenParams) (CreateAPITokenRow, error) {
+	row := q.db.QueryRow(ctx, createAPIToken,
+		arg.OrganizationID,
+		arg.UserID,
+		arg.Name,
+		arg.TokenHash,
+		arg.CanWrite,
+		arg.ExpiresAt,
+	)
+	var i CreateAPITokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.CanWrite,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.RevokedAt,
+	)
+	return i, err
 }
 
 const createAccount = `-- name: CreateAccount :one
@@ -866,6 +925,40 @@ func (q *Queries) GetAccount(ctx context.Context, arg GetAccountParams) (Service
 		&i.Position,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getActiveAPIToken = `-- name: GetActiveAPIToken :one
+SELECT t.id, t.user_id, t.can_write, u.organization_id, u.email, u.display_name, u.role, u.status
+FROM api_tokens t
+JOIN users u ON u.id = t.user_id
+WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND t.expires_at > now() AND u.status = 'active'
+`
+
+type GetActiveAPITokenRow struct {
+	ID             uuid.UUID `json:"id"`
+	UserID         uuid.UUID `json:"user_id"`
+	CanWrite       bool      `json:"can_write"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Email          string    `json:"email"`
+	DisplayName    string    `json:"display_name"`
+	Role           string    `json:"role"`
+	Status         string    `json:"status"`
+}
+
+func (q *Queries) GetActiveAPIToken(ctx context.Context, tokenHash []byte) (GetActiveAPITokenRow, error) {
+	row := q.db.QueryRow(ctx, getActiveAPIToken, tokenHash)
+	var i GetActiveAPITokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CanWrite,
+		&i.OrganizationID,
+		&i.Email,
+		&i.DisplayName,
+		&i.Role,
+		&i.Status,
 	)
 	return i, err
 }
@@ -1810,6 +1903,64 @@ func (q *Queries) LinkAccountVaultItem(ctx context.Context, arg LinkAccountVault
 		arg.VaultItemID,
 	)
 	return err
+}
+
+const listAPITokens = `-- name: ListAPITokens :many
+SELECT t.id, t.user_id, u.display_name, u.email, t.name, t.can_write, t.created_at, t.expires_at, t.last_used_at, t.revoked_at
+FROM api_tokens t
+JOIN users u ON u.id = t.user_id
+WHERE t.organization_id = $1 AND ($2::boolean OR t.user_id = $3)
+ORDER BY t.created_at DESC
+`
+
+type ListAPITokensParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	AllUsers       bool      `json:"all_users"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+type ListAPITokensRow struct {
+	ID          uuid.UUID          `json:"id"`
+	UserID      uuid.UUID          `json:"user_id"`
+	DisplayName string             `json:"display_name"`
+	Email       string             `json:"email"`
+	Name        string             `json:"name"`
+	CanWrite    bool               `json:"can_write"`
+	CreatedAt   time.Time          `json:"created_at"`
+	ExpiresAt   time.Time          `json:"expires_at"`
+	LastUsedAt  pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+}
+
+func (q *Queries) ListAPITokens(ctx context.Context, arg ListAPITokensParams) ([]ListAPITokensRow, error) {
+	rows, err := q.db.Query(ctx, listAPITokens, arg.OrganizationID, arg.AllUsers, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAPITokensRow{}
+	for rows.Next() {
+		var i ListAPITokensRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.DisplayName,
+			&i.Email,
+			&i.Name,
+			&i.CanWrite,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAccountsForOrg = `-- name: ListAccountsForOrg :many
@@ -2885,6 +3036,46 @@ func (q *Queries) RetireNextEpoch(ctx context.Context, organizationID uuid.UUID)
 	return err
 }
 
+const revokeAPIToken = `-- name: RevokeAPIToken :one
+UPDATE api_tokens SET revoked_at = now()
+WHERE id = $1 AND organization_id = $2 AND revoked_at IS NULL
+  AND ($3::boolean OR user_id = $4)
+RETURNING id, user_id
+`
+
+type RevokeAPITokenParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+	AnyUser        bool      `json:"any_user"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+type RevokeAPITokenRow struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) RevokeAPIToken(ctx context.Context, arg RevokeAPITokenParams) (RevokeAPITokenRow, error) {
+	row := q.db.QueryRow(ctx, revokeAPIToken,
+		arg.ID,
+		arg.OrganizationID,
+		arg.AnyUser,
+		arg.UserID,
+	)
+	var i RevokeAPITokenRow
+	err := row.Scan(&i.ID, &i.UserID)
+	return i, err
+}
+
+const revokeAPITokensForUser = `-- name: RevokeAPITokensForUser :exec
+UPDATE api_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
+`
+
+func (q *Queries) RevokeAPITokensForUser(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, revokeAPITokensForUser, userID)
+	return err
+}
+
 const revokeInvitation = `-- name: RevokeInvitation :one
 UPDATE invitations SET revoked_at = now()
 WHERE id = $1 AND organization_id = $2 AND accepted_at IS NULL AND revoked_at IS NULL
@@ -3032,6 +3223,16 @@ type SoftDeleteVaultItemParams struct {
 
 func (q *Queries) SoftDeleteVaultItem(ctx context.Context, arg SoftDeleteVaultItemParams) error {
 	_, err := q.db.Exec(ctx, softDeleteVaultItem, arg.ID, arg.VaultID, arg.UpdatedBy)
+	return err
+}
+
+const touchAPIToken = `-- name: TouchAPIToken :exec
+UPDATE api_tokens SET last_used_at = now()
+WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')
+`
+
+func (q *Queries) TouchAPIToken(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, touchAPIToken, id)
 	return err
 }
 
