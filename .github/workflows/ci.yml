@@ -3,6 +3,10 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -42,6 +46,9 @@ jobs:
         run: POSTGRES_PASSWORD=ci docker compose config >/tmp/compose.resolved.yml
       - name: Go vulnerability check
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: npm audit (shipped dependencies)
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
 
   image:
     runs-on: ubuntu-latest
@@ -50,4 +57,38 @@ jobs:
       - name: Build image
         run: docker build -t boriseltsyn:ci .
       - name: Scan image
-        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image --exit-code 1 --severity CRITICAL --ignore-unfixed boriseltsyn:ci
+        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed boriseltsyn:ci
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build linux/amd64 and linux/arm64
+        run: docker buildx build --platform linux/amd64,linux/arm64 .
+
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: ci-only-password
+      BORISELTSYN_VERSION: ci
+      BOOTSTRAP_ORG_NAME: CI
+      BOOTSTRAP_OIDC_ISSUER: https://auth.example.test/application/o/borisyeltsin/
+      BOOTSTRAP_OIDC_SUBJECT: ci-subject
+      BOOTSTRAP_EMAIL: ci@example.test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compose up
+        run: timeout 300 docker compose up -d --build --wait
+      - name: Ready and serving the UI
+        run: |
+          curl -fsS http://127.0.0.1:8080/readyz
+          curl -fsS -D /tmp/headers -o /tmp/index.html http://127.0.0.1:8080/
+          grep -qi "^content-security-policy:.*'wasm-unsafe-eval'" /tmp/headers
+          grep -q '<div id="root">' /tmp/index.html
+      - name: First admin invite
+        run: docker compose exec -T boriseltsyn boriseltsyn bootstrap-invite | grep -q '^BOOTSTRAP_INVITE_TOKEN='
+      - name: Restore drill
+        run: scripts/restore-drill.sh
+      - name: Logs
+        if: failure()
+        run: docker compose logs
+      - name: Compose down
+        if: always()
+        run: docker compose down -v
