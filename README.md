@@ -64,6 +64,10 @@ New vault passwords cannot be saved until organization recovery is set up: an ad
 
 Read [docs/RECOVERY.md](docs/RECOVERY.md) before storing a real password. If the passphrase, the personal recovery key, and both organization shares are lost, the vault cannot be opened.
 
+### AI agents (MCP)
+
+`/mcp` is a Model Context Protocol endpoint for agents such as Claude. It answers questions about the ledger (monthly bill, upcoming renewals, subscriptions) and, with a write token, adds subscriptions. It never reaches the vault. Create a token on the **Agents** page; see [docs/MCP.md](docs/MCP.md).
+
 ## Develop
 
 ```bash
@@ -83,6 +87,7 @@ Generated sqlc code is committed. Regenerate with sqlc 1.30.0 and keep the diff 
 - [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — mitigations and the claims this project does not make
 - [docs/RECOVERY.md](docs/RECOVERY.md) — personal key, two custodians, departure, and permanent loss
 - [docs/BACKUP.md](docs/BACKUP.md) — `pg_dump` and the secret-free export
+- [docs/MCP.md](docs/MCP.md) — AI agent endpoint, tokens, tools and what they can reach
 - [SECURITY.md](SECURITY.md) — reporting and the short limit list
 - [DESIGN.md](DESIGN.md) — theme tokens, type, retro budget, layout and accessibility rules
 

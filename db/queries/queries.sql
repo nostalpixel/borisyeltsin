@@ -616,3 +616,38 @@ SELECT * FROM audit_events
 WHERE organization_id = $1
 ORDER BY id DESC
 LIMIT $2;
+
+-- name: CreateAPIToken :one
+INSERT INTO api_tokens (organization_id, user_id, name, token_hash, can_write, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, name, can_write, created_at, expires_at, last_used_at, revoked_at;
+
+-- name: CountLiveAPITokens :one
+SELECT count(*) FROM api_tokens
+WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now();
+
+-- name: ListAPITokens :many
+SELECT t.id, t.user_id, u.display_name, u.email, t.name, t.can_write, t.created_at, t.expires_at, t.last_used_at, t.revoked_at
+FROM api_tokens t
+JOIN users u ON u.id = t.user_id
+WHERE t.organization_id = sqlc.arg(organization_id) AND (sqlc.arg(all_users)::boolean OR t.user_id = sqlc.arg(user_id))
+ORDER BY t.created_at DESC;
+
+-- name: RevokeAPIToken :one
+UPDATE api_tokens SET revoked_at = now()
+WHERE id = sqlc.arg(id) AND organization_id = sqlc.arg(organization_id) AND revoked_at IS NULL
+  AND (sqlc.arg(any_user)::boolean OR user_id = sqlc.arg(user_id))
+RETURNING id, user_id;
+
+-- name: RevokeAPITokensForUser :exec
+UPDATE api_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL;
+
+-- name: GetActiveAPIToken :one
+SELECT t.id, t.user_id, t.can_write, u.organization_id, u.email, u.display_name, u.role, u.status
+FROM api_tokens t
+JOIN users u ON u.id = t.user_id
+WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND t.expires_at > now() AND u.status = 'active';
+
+-- name: TouchAPIToken :exec
+UPDATE api_tokens SET last_used_at = now()
+WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute');

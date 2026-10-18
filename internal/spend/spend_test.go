@@ -93,3 +93,14 @@ func TestNextRenewal(t *testing.T) {
 		}
 	}
 }
+
+func TestParseMinorRejectsOverflow(t *testing.T) {
+	for _, raw := range []string{"92233720368547759", "1000000000001", "99999999999999999.99"} {
+		if _, err := ParseMinor(raw); err == nil {
+			t.Fatalf("%s accepted", raw)
+		}
+	}
+	if v, err := ParseMinor("1000000000000.00"); err != nil || v != 100000000000000 {
+		t.Fatalf("bound: %d %v", v, err)
+	}
+}
