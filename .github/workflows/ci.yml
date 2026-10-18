@@ -59,7 +59,7 @@ jobs:
       - name: Scan image
         run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed boriseltsyn:ci
       - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build linux/amd64 and linux/arm64
         run: docker buildx build --platform linux/amd64,linux/arm64 .
 
