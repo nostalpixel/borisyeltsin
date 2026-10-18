@@ -67,6 +67,8 @@ The personal recovery key is 32 random bytes, standard-base64, shown once at enr
 
 Organization recovery lets two custodians together reopen the vault when nobody who holds an envelope can unlock it. It is separate from personal recovery and uses neither the Authentik password nor any member passphrase.
 
+"The server" below means the API process and its database: it can lie about stored data, replay old rows and hand out its own keys. A server that replaces the JavaScript it serves defeats every browser-side check here; that is outside this design (see THREAT_MODEL.md).
+
 ### Recovery key
 
 An admin's browser generates an X25519 key pair, the recovery key. The public half is stored on the server with its fingerprint (SHA-256 of the raw 32 bytes, hex, as for identity keys). The private half is split and then wiped with `memzero`:
@@ -78,28 +80,41 @@ An admin's browser generates an X25519 key pair, the recovery key. The public ha
 
 The server never sees the private key, a plaintext share or the combined value. Each setup is an **epoch** (an integer that increases by one per setup). Only one epoch is active at a time.
 
+The two custodians must be different users with different approved fingerprints. The server enforces this in the setup transaction and with unique constraints on `(organization, epoch, user)` and `(organization, epoch, fingerprint)`, and the setting-up browser refuses to build shares otherwise.
+
 ### Custodian shares
 
 Each share is sent to its custodian with `crypto_box_easy`, from the setting-up admin's identity key to the custodian's approved identity key, with a fresh 24-byte nonce. The plaintext is:
 
 ```json
-{"v":2,"org_id":"<uuid>","epoch":1,"share_index":1,"share":"<standard base64 of 32 bytes>","recovery_public_key":"<standard base64 of 32 bytes>"}
+{"v":2,"org_id":"<uuid>","epoch":1,"share_index":1,
+ "sender_user_id":"<uuid>","sender_fingerprint":"<hex>",
+ "custodian_user_id":"<uuid>","custodian_fingerprint":"<hex>",
+ "share":"<standard base64 of 32 bytes>","recovery_public_key":"<standard base64 of 32 bytes>"}
 ```
 
 The box is authenticated, not sealed, so a custodian knows which colleague produced the share. The server cannot forge a share without an approved identity private key. `crypto_box` authenticates the pair, not one side: the custodian could also have produced the box. That is harmless here, because a custodian forging a share to themself gains nothing. An attacker who holds a custodian's identity private key can forge shares to that custodian, but that attacker can already open the real share. Before the admin's browser seals a share, both custodians' keys must be pinned (see "Verifying recipient keys").
 
 A custodian **confirms** their share from their own browser:
 
-1. Fetch the sealed share, the epoch's public key and the sender's public key.
-2. Require the sender's key to be pinned, and open the box.
-3. Check `v`, `org_id`, `epoch` and `share_index` against the request, and check that `recovery_public_key` equals the epoch's published key.
-4. Pin the recovery key fingerprint for this organization, and post the fingerprint back.
+1. Fetch the boxed share, the epoch record (public key, creator) and the creator's public key.
+2. Require the creator's key to be pinned, and open the box with it.
+3. Check `v`, `org_id`, `epoch` and `share_index` against the request. Check that `sender_user_id` and `sender_fingerprint` are the epoch's creator and the pinned key used to open the box, and that `custodian_user_id` and `custodian_fingerprint` are the signed-in user and their own key. Check that `recovery_public_key` equals the epoch's published key.
+4. Pin the recovery key fingerprint together with the epoch for this organization, and post the fingerprint back.
 
-The server accepts a confirmation only from that custodian, for that epoch, with the epoch's fingerprint. The epoch becomes active once **both** custodians have confirmed. Activation deletes older epochs and their recovery envelopes in the same transaction.
+The server accepts a confirmation only from that custodian, for that epoch, with the epoch's fingerprint. Once **both** custodians have confirmed, the epoch is `confirmed`. It becomes `active` in the transaction where an owner posts its first recovery envelope (for the vault's current key version), and that same transaction retires the previous epoch and deletes its envelopes. The organization is therefore never left with an active epoch that has no envelope.
+
+**Rollback.** The recovery pin records the epoch as well as the fingerprint. A browser refuses a recovery key whose epoch is lower than the pinned one, or the pinned epoch with a different fingerprint, so a server that restores an older epoch is caught by every browser that saw the newer one. A browser with no pin (a new device) cannot detect a rollback by itself; it relies on the out-of-band fingerprint check below.
 
 ### Recovery envelopes and routine rotation
 
-A recovery envelope is the member-envelope JSON (`{"v":1,"vault_id","key_version","key"}`) sealed with `crypto_box_seal` to the active recovery public key. The server stores it per `(vault_id, key_version)` together with the epoch it was sealed under.
+A recovery envelope is this JSON sealed with `crypto_box_seal` to the active recovery public key:
+
+```json
+{"v":2,"org_id":"<uuid>","vault_id":"<uuid>","key_version":3,"epoch":1,"recovery_fingerprint":"<hex>","key":"<standard base64 of 32 bytes>"}
+```
+
+Sealed boxes carry no additional data, so every context field is inside the plaintext and the opening browser checks each one. The server stores the envelope per `(vault_id, key_version)` together with its epoch.
 
 Because sealing needs only the public key, routine rotation needs no custodian. The rotating owner's browser seals the new vault key to the recovery public key alongside the member envelopes. The browser refuses to seal to a recovery key that is not pinned with the published fingerprint. An unpinned key opens the verify dialog: compare the fingerprint with a custodian, who reads it from their confirmed share. A changed fingerprint is shown as a changed key and blocks sealing until it is verified again. An owner who unlocks after activation and finds no recovery envelope for the current key version seals one.
 
@@ -108,19 +123,25 @@ Because sealing needs only the public key, routine rotation needs no custodian. 
 Recovery is used when nobody who holds an envelope can unlock, for example when the only owner lost both their passphrase and their personal recovery key. One custodian runs it in their own browser while the other reads them their share out of band:
 
 1. The custodian opens their own share and enters the other custodian's share. The browser checks each 32-byte share, combines them, and derives the public key. A mismatch with the pinned recovery fingerprint fails with "shares do not match" and nothing is sent.
-2. **Challenge.** The browser asks for a challenge. Only an active user who is a custodian of the active epoch may ask, including while the epoch is degraded (see below), because that is when recovery may be needed. At most 5 challenges per custodian per hour are issued. The server draws 32 random bytes, stores their SHA-256 with the custodian, the vault, the epoch and a 5-minute expiry, and returns `crypto_box_seal(challenge, recovery_public_key)`.
-3. The browser opens the challenge with the recovered key pair and posts the 32 bytes back. The server compares hashes in constant time, marks the challenge used (one attempt per challenge), and creates a **recovery grant**: this custodian, this vault, 15 minutes. Both the challenge and the grant are audited, including failures.
+2. **Challenge.** The browser asks for a challenge. Only an active user who is a custodian of the active epoch may ask, including while the epoch is degraded (see below), because that is when recovery may be needed. At most 5 challenges per custodian per hour are issued. The server builds the challenge plaintext
+
+   ```json
+   {"v":1,"challenge_id":"<uuid>","org_id":"<uuid>","vault_id":"<uuid>","epoch":1,"custodian_id":"<uuid>","nonce":"<standard base64 of 32 random bytes>"}
+   ```
+
+   stores the SHA-256 of those exact bytes with the same ids and a 5-minute expiry, and returns `challenge_id` and `crypto_box_seal(plaintext, recovery_public_key)`.
+3. The browser opens the challenge with the recovered key pair, checks that the ids match what it asked for, and posts `challenge_id` and the plaintext bytes back. In one transaction the server claims the challenge (`UPDATE … SET used_at = now() WHERE id = $1 AND custodian_id = $2 AND used_at IS NULL AND expires_at > now()`), compares hashes in constant time, and only then creates a **recovery grant** bound to this custodian, vault and epoch, valid for 15 minutes and for one rotation. A wrong answer still uses up the challenge. Challenges and grants are audited, including failures. The rate limit is there for availability; the proof is the opened box.
 4. With the grant, the browser reads the recovery envelope, the items (ciphertext) and the member list. It opens the vault key from the envelope and checks `vault_id` and `key_version`.
-5. The browser rotates: new vault key, every live item re-encrypted, a recovery envelope sealed to the same recovery public key, and member envelopes for the members it keeps. The rotation must include an envelope for the recovering custodian. Inside the rotation transaction, the custodian becomes a vault owner. The grant is consumed.
+5. The browser rotates: new vault key, every live item re-encrypted, and member envelopes for the members it keeps. The rotation must include an envelope for the recovering custodian and must not include a recovery envelope. Inside the rotation transaction, the custodian becomes a vault owner, the grant is consumed, and the epoch is marked `spent`.
 6. The browser wipes the shares, the recovered private key and the old vault key with `memzero`, and clears the share fields.
 
 The grant is the only exception to the owner gate in "Server-side write rules", and it covers only these reads and one rotation. An expired or used grant returns 403 and the custodian starts again at step 2. Possession of the recovery key, proven by the challenge, is the authority: an admin or custodian without both shares cannot get a grant.
 
-Recovery does not change the recovery key. The shares stay valid after a recovery rotation. Custodians set up a new epoch when a share may have been exposed, such as when it was read over a channel that others can see.
+**A recovery uses up the recovery key.** During recovery one browser held both shares, and one share travelled out of band, so the recovery private key must be assumed copied. A `spent` epoch accepts no new recovery envelopes and no challenges, and the organization is not recovery-ready: new items are blocked until an admin sets up a new epoch and an owner seals the vault key to it.
 
 ### Readiness and custodian changes
 
-The organization is recovery-ready when an active epoch exists and both custodians are active users whose approved key fingerprint equals the fingerprint the share was sent to. Item creation additionally needs a recovery envelope for the vault's current key version under the active epoch. Otherwise the server refuses with 409 `recovery_not_ready` or `recovery_envelope_missing`.
+The organization is recovery-ready when an active epoch exists, it is neither degraded nor spent, and both custodians are active users whose approved key fingerprint equals the fingerprint the share was sent to. Item creation additionally needs a recovery envelope for the vault's current key version under the active epoch. Otherwise the server refuses with 409 `recovery_not_ready` or `recovery_envelope_missing`.
 
 When a custodian is revoked, or an admin approves a replacement key for a custodian, that custodian's share counts as compromised. In the same transaction the server:
 
@@ -167,7 +188,7 @@ The server cannot see the vault key, so it enforces who may write and against wh
 - Item and envelope writes carry `expected_key_version`. A write prepared under an older key is refused with 409 `stale_key`, so no row ends up labelled with a key version it was not encrypted under.
 - Item edits carry the item `version` they read. A stale edit is refused with 409 `item_conflict`.
 - Rotation must list exactly the live items with their versions (409 `items_changed` or `item_conflict` otherwise), one envelope per member to an approved fingerprint, and a recovery envelope for the active epoch.
-- A rotation under a recovery grant is the one exception to the owner gate. See "Recovering".
+- A rotation under a recovery grant is the one exception to the owner gate. It carries no recovery envelope and spends the epoch. See "Recovering".
 - A vault always keeps an owner: removing, demoting or revoking its last owner is refused with 409 `last_vault_owner`.
 
 ## Verifying recipient keys
