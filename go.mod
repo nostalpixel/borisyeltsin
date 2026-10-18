@@ -4,7 +4,7 @@ go 1.26.9
 
 require (
 	github.com/coreos/go-oidc/v3 v3.14.1
-	github.com/go-chi/chi/v5 v5.2.2
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
