@@ -1,4 +1,5 @@
-// Package scheduler records renewal alerts inside the application process.
+// Package scheduler advances auto-renewing subscriptions and records renewal
+// alerts inside the application process.
 package scheduler
 
 import (
@@ -39,7 +40,11 @@ func run(ctx context.Context, pool *pgxpool.Pool, loc *time.Location) {
 		return
 	}
 	now := time.Now()
+	today := spend.Today(now, loc)
 	for _, row := range rows {
+		if row.AutoRenew {
+			advance(ctx, q, &row, today)
+		}
 		for _, horizon := range spend.AlertHorizons(spend.DaysUntil(row.RenewalDate, now, loc), true) {
 			if err := q.InsertRenewalAlert(ctx, db.InsertRenewalAlertParams{
 				OrganizationID: row.OrganizationID,
@@ -50,5 +55,25 @@ func run(ctx context.Context, pool *pgxpool.Pool, loc *time.Location) {
 				slog.Error("renewal alert failed", "error", err)
 			}
 		}
+	}
+}
+
+// advance moves a past-due auto-renewing subscription to its next renewal.
+func advance(ctx context.Context, q *db.Queries, row *db.ListRenewalCandidatesRow, today time.Time) {
+	var customDays int32
+	if row.CustomIntervalDays != nil {
+		customDays = *row.CustomIntervalDays
+	}
+	next, moved := spend.NextRenewal(row.RenewalDate, row.BillingCycle, customDays, today)
+	if !moved {
+		return
+	}
+	n, err := q.AdvanceRenewalDate(ctx, db.AdvanceRenewalDateParams{NextDate: next, ID: row.ID, PreviousDate: row.RenewalDate})
+	if err != nil {
+		slog.Error("renewal advance failed", "error", err)
+		return
+	}
+	if n == 1 {
+		row.RenewalDate = next
 	}
 }

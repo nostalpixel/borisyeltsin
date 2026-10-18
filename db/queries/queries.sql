@@ -169,7 +169,7 @@ DELETE FROM crypto_proposals WHERE user_id = $1;
 DELETE FROM crypto_identities WHERE user_id = $1 AND status IN ('pending', 'rejected');
 
 -- name: ListRenewalCandidates :many
-SELECT sub.id, s.organization_id, sub.renewal_date
+SELECT sub.id, s.organization_id, sub.renewal_date, sub.billing_cycle, sub.custom_interval_days, sub.auto_renew
 FROM subscriptions sub
 JOIN services s ON s.id = sub.service_id
 WHERE s.archived_at IS NULL;
@@ -572,6 +572,12 @@ SELECT * FROM payment_methods WHERE organization_id = $1 ORDER BY nickname;
 
 -- name: DeletePaymentMethod :exec
 DELETE FROM payment_methods WHERE id = $1 AND organization_id = $2;
+
+-- name: AdvanceRenewalDate :execrows
+-- Moves an auto-renewing subscription to its next renewal; the old date
+-- guards against a concurrent edit.
+UPDATE subscriptions SET renewal_date = sqlc.arg(next_date), updated_at = now()
+WHERE id = sqlc.arg(id) AND renewal_date = sqlc.arg(previous_date) AND auto_renew;
 
 -- name: InsertRenewalAlert :exec
 INSERT INTO renewal_alerts (organization_id, subscription_id, days_before, due_on)

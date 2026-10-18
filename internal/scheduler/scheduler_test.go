@@ -55,3 +55,54 @@ func TestRunInsertsExactHorizonAlert(t *testing.T) {
 		t.Fatalf("alerts %+v", alerts)
 	}
 }
+
+func TestRunAdvancesPastAutoRenewals(t *testing.T) {
+	pool := testpg.Pool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+	org, err := q.CreateOrganization(ctx, "Renewals")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := q.CreateService(ctx, db.CreateServiceParams{
+		OrganizationID: org.ID, Name: "Linode", Category: "infra",
+		Logo: "LI", LogoBg: "#eeeafc", LogoFg: "#7663c6", Tags: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	today := time.Now().UTC()
+	today = time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
+	past := today.AddDate(0, 0, -45)
+	custom := int32(30)
+	create := func(name, cycle string, days *int32, auto bool) db.Subscription {
+		sub, err := q.CreateSubscription(ctx, db.CreateSubscriptionParams{
+			ServiceID: svc.ID, Name: name, BillingCycle: cycle, CustomIntervalDays: days,
+			RenewalDate: past, CostMinor: 500, Currency: "USD", AutoRenew: auto,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sub
+	}
+	custSub := create("custom", "custom", &custom, true)
+	manual := create("manual", "monthly", nil, false)
+
+	run(ctx, pool, time.UTC)
+	run(ctx, pool, time.UTC)
+
+	got, err := q.GetSubscription(ctx, db.GetSubscriptionParams{ID: custSub.ID, OrganizationID: org.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := past.AddDate(0, 0, 60); !got.RenewalDate.Equal(want) {
+		t.Fatalf("custom renewal %s, want %s", got.RenewalDate.Format("2006-01-02"), want.Format("2006-01-02"))
+	}
+	kept, err := q.GetSubscription(ctx, db.GetSubscriptionParams{ID: manual.ID, OrganizationID: org.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kept.RenewalDate.Equal(past) {
+		t.Fatalf("manual renewal moved to %s", kept.RenewalDate.Format("2006-01-02"))
+	}
+}
