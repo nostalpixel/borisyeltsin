@@ -80,6 +80,8 @@ An admin's browser generates an X25519 key pair, the recovery key. The public ha
 
 The server never sees the private key, a plaintext share or the combined value. Each setup is an **epoch** (an integer that increases by one per setup). Only one epoch is active at a time.
 
+**Trust assumption.** The setting-up browser holds the whole private key between generating and splitting it. An admin who wants to keep a copy can. This is accepted: setup is a deliberate step by a trusted admin, who as a vault owner already holds the vault key itself. What the copy would add is access to vault keys sealed after that admin leaves, so the epoch records its creator, and revoking the creator degrades the epoch exactly like a departed custodian (see "Readiness and custodian changes").
+
 The two custodians must be different users with different approved fingerprints. The server enforces this in the setup transaction and with unique constraints on `(organization, epoch, user)` and `(organization, epoch, fingerprint)`, and the setting-up browser refuses to build shares otherwise.
 
 ### Custodian shares
@@ -123,7 +125,7 @@ Because sealing needs only the public key, routine rotation needs no custodian. 
 Recovery is used when nobody who holds an envelope can unlock, for example when the only owner lost both their passphrase and their personal recovery key. One custodian runs it in their own browser while the other reads them their share out of band:
 
 1. The custodian opens their own share and enters the other custodian's share. The browser checks each 32-byte share, combines them, and derives the public key. A mismatch with the pinned recovery fingerprint fails with "shares do not match" and nothing is sent.
-2. **Challenge.** The browser asks for a challenge. Only an active user who is a custodian of the active epoch may ask, including while the epoch is degraded (see below), because that is when recovery may be needed. At most 5 challenges per custodian per hour are issued. The server builds the challenge plaintext
+2. **Challenge.** The browser asks for a challenge. Only an active user who is a custodian of the active epoch may ask, and only while the epoch is neither degraded nor spent. A degraded epoch refuses recovery: it would mean trusting a share that has been declared compromised. At most 5 challenges per custodian per hour are issued. The server builds the challenge plaintext
 
    ```json
    {"v":1,"challenge_id":"<uuid>","org_id":"<uuid>","vault_id":"<uuid>","epoch":1,"custodian_id":"<uuid>","nonce":"<standard base64 of 32 random bytes>"}
@@ -143,12 +145,12 @@ The grant is the only exception to the owner gate in "Server-side write rules", 
 
 The organization is recovery-ready when an active epoch exists, it is neither degraded nor spent, and both custodians are active users whose approved key fingerprint equals the fingerprint the share was sent to. Item creation additionally needs a recovery envelope for the vault's current key version under the active epoch. Otherwise the server refuses with 409 `recovery_not_ready` or `recovery_envelope_missing`.
 
-When a custodian is revoked, or an admin approves a replacement key for a custodian, that custodian's share counts as compromised. In the same transaction the server:
+When a custodian is revoked, or an admin approves a replacement key for a custodian, that custodian's share counts as compromised. Revoking the admin who created the epoch counts the same way, because that admin may have kept the whole key. In the same transaction the server:
 
-- marks the epoch as degraded, so the organization stops being recovery-ready;
+- marks the epoch as degraded, so the organization stops being recovery-ready and recovery is refused;
 - marks the vault `rotation_required`, because the departed share and the remaining one together still open the current recovery envelope.
 
-New items are then blocked and the app shows a banner. To repair, an admin sets up a new epoch with two current custodians. After activation, an owner rotates the vault key, which replaces the last recovery envelope the old shares could open.
+New items are then blocked and the app shows a banner. Until the repair, the vault can be opened only by members who hold an envelope, so the banner tells admins to repair recovery promptly. To repair, an admin sets up a new epoch with two current custodians. After activation, an owner rotates the vault key, which replaces the last recovery envelope the old shares could open.
 
 ### Migration from format 1
 
