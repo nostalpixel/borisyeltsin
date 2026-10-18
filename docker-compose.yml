@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
 
   boriseltsyn:
-    image: boriseltsyn:${BORISELTSYN_VERSION:-dev}
+    image: ghcr.io/nostalpixel/borisyeltsin:${BORISELTSYN_VERSION:-dev}
     build: .
     depends_on:
       postgres:
