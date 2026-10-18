@@ -1,20 +1,22 @@
 # Multi-stage build. The runtime image is one static binary and the compiled UI.
-# Build for the host architecture. linux/amd64 and linux/arm64 use this same file.
+# The UI and Go stages run on the build machine and cross-compile, so a
+# linux/arm64 image builds without emulating npm or the Go compiler.
 
-FROM node:22.15.1-alpine AS web
+FROM --platform=$BUILDPLATFORM node:22.15.1-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.26.9-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./internal/httpserver/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/boriseltsyn ./cmd/boriseltsyn
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/boriseltsyn ./cmd/boriseltsyn
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates \

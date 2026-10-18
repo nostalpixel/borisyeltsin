@@ -20,7 +20,18 @@ docker compose up -d
 
 The database URL inside Compose uses `sslmode=disable` on the Docker network. Put TLS on the reverse proxy in front of port 8080. `COOKIE_SECURE` defaults to `true`, so the session cookie only travels over HTTPS. Set it to `false` only to try the app over plain `http://localhost`. Leave `TRUST_PROXY` false unless that proxy sets `X-Forwarded-For` and you want it used as the rate-limit key.
 
-`BORISELTSYN_VERSION` tags the image. The default tag is `boriseltsyn:dev`.
+### Release images
+
+Tagged releases are published as `ghcr.io/nostalpixel/borisyeltsin` for `linux/amd64` and `linux/arm64`. Set `BORISELTSYN_VERSION` to a release version (for example `0.1.0`) and pull instead of building:
+
+```bash
+docker compose pull boriseltsyn
+docker compose up -d --no-build
+```
+
+The default `BORISELTSYN_VERSION` is `dev`, which is never published, so a plain `docker compose up` builds the image from this checkout. Before upgrading to a release that contains a migration, take a `pg_dump` (see [docs/BACKUP.md](docs/BACKUP.md)).
+
+Pushing a tag `vX.Y.Z` runs the whole CI and then publishes the image. The release fails without pushing if Trivy finds a fixable HIGH or CRITICAL vulnerability. CI also runs `npm audit` on shipped dependencies, starts the Compose stack, checks `/readyz` and the security headers, creates a bootstrap invite, and runs the restore drill. Dependabot opens weekly update PRs for Go, npm, Docker base images and Actions.
 
 Secrets may be passed as `NAME_FILE` paths, for example `OIDC_CLIENT_SECRET_FILE=/run/secrets/oidc_client_secret`. A readable file replaces the plain environment variable. This includes `DATABASE_URL_FILE`.
 
