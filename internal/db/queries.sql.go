@@ -40,6 +40,27 @@ func (q *Queries) AcceptInvitation(ctx context.Context, id uuid.UUID) (Invitatio
 	return i, err
 }
 
+const advanceRenewalDate = `-- name: AdvanceRenewalDate :execrows
+UPDATE subscriptions SET renewal_date = $1, updated_at = now()
+WHERE id = $2 AND renewal_date = $3 AND auto_renew
+`
+
+type AdvanceRenewalDateParams struct {
+	NextDate     time.Time `json:"next_date"`
+	ID           uuid.UUID `json:"id"`
+	PreviousDate time.Time `json:"previous_date"`
+}
+
+// Moves an auto-renewing subscription to its next renewal; the old date
+// guards against a concurrent edit.
+func (q *Queries) AdvanceRenewalDate(ctx context.Context, arg AdvanceRenewalDateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceRenewalDate, arg.NextDate, arg.ID, arg.PreviousDate)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const approveCryptoIdentity = `-- name: ApproveCryptoIdentity :one
 UPDATE crypto_identities
 SET status = 'approved', approved_by = $2, approved_at = now()
@@ -2331,16 +2352,19 @@ func (q *Queries) ListRenewalAlerts(ctx context.Context, organizationID uuid.UUI
 }
 
 const listRenewalCandidates = `-- name: ListRenewalCandidates :many
-SELECT sub.id, s.organization_id, sub.renewal_date
+SELECT sub.id, s.organization_id, sub.renewal_date, sub.billing_cycle, sub.custom_interval_days, sub.auto_renew
 FROM subscriptions sub
 JOIN services s ON s.id = sub.service_id
 WHERE s.archived_at IS NULL
 `
 
 type ListRenewalCandidatesRow struct {
-	ID             uuid.UUID `json:"id"`
-	OrganizationID uuid.UUID `json:"organization_id"`
-	RenewalDate    time.Time `json:"renewal_date"`
+	ID                 uuid.UUID `json:"id"`
+	OrganizationID     uuid.UUID `json:"organization_id"`
+	RenewalDate        time.Time `json:"renewal_date"`
+	BillingCycle       string    `json:"billing_cycle"`
+	CustomIntervalDays *int32    `json:"custom_interval_days"`
+	AutoRenew          bool      `json:"auto_renew"`
 }
 
 func (q *Queries) ListRenewalCandidates(ctx context.Context) ([]ListRenewalCandidatesRow, error) {
@@ -2352,7 +2376,14 @@ func (q *Queries) ListRenewalCandidates(ctx context.Context) ([]ListRenewalCandi
 	items := []ListRenewalCandidatesRow{}
 	for rows.Next() {
 		var i ListRenewalCandidatesRow
-		if err := rows.Scan(&i.ID, &i.OrganizationID, &i.RenewalDate); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganizationID,
+			&i.RenewalDate,
+			&i.BillingCycle,
+			&i.CustomIntervalDays,
+			&i.AutoRenew,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

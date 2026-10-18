@@ -62,3 +62,34 @@ func TestDaysUntil(t *testing.T) {
 		t.Fatalf("%d", DaysUntil(renewal, today, loc))
 	}
 }
+
+func TestNextRenewal(t *testing.T) {
+	day := func(y int, m time.Month, d int) time.Time { return time.Date(y, m, d, 0, 0, 0, 0, time.UTC) }
+	cases := []struct {
+		name    string
+		renewal time.Time
+		cycle   string
+		custom  int32
+		today   time.Time
+		want    time.Time
+		moved   bool
+	}{
+		{"future stays", day(2026, 11, 1), "monthly", 0, day(2026, 10, 19), day(2026, 11, 1), false},
+		{"today stays", day(2026, 10, 19), "monthly", 0, day(2026, 10, 19), day(2026, 10, 19), false},
+		{"monthly one step", day(2026, 9, 25), "monthly", 0, day(2026, 10, 19), day(2026, 10, 25), true},
+		{"monthly many steps", day(2025, 10, 5), "monthly", 0, day(2026, 10, 19), day(2026, 11, 5), true},
+		{"month end clamps", day(2026, 1, 31), "monthly", 0, day(2026, 2, 1), day(2026, 2, 28), true},
+		{"month end keeps day", day(2026, 1, 31), "monthly", 0, day(2026, 3, 1), day(2026, 3, 31), true},
+		{"quarterly", day(2026, 7, 10), "quarterly", 0, day(2026, 10, 19), day(2027, 1, 10), true},
+		{"annual leap day", day(2024, 2, 29), "annual", 0, day(2025, 1, 1), day(2025, 2, 28), true},
+		{"custom", day(2026, 10, 1), "custom", 10, day(2026, 10, 19), day(2026, 10, 21), true},
+		{"custom lands today", day(2026, 10, 9), "custom", 10, day(2026, 10, 19), day(2026, 10, 19), true},
+		{"unknown cycle", day(2026, 1, 1), "weekly", 0, day(2026, 10, 19), day(2026, 1, 1), false},
+	}
+	for _, c := range cases {
+		got, moved := NextRenewal(c.renewal, c.cycle, c.custom, c.today)
+		if !got.Equal(c.want) || moved != c.moved {
+			t.Errorf("%s: got %s %v, want %s %v", c.name, got.Format("2006-01-02"), moved, c.want.Format("2006-01-02"), c.moved)
+		}
+	}
+}

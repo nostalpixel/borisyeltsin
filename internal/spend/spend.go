@@ -119,3 +119,50 @@ func AlertHorizons(days int, dated bool) []int {
 	}
 	return out
 }
+
+// NextRenewal moves a past renewal date forward by whole billing cycles to
+// the first date on or after today. Month steps count from the original date
+// and clamp to the month's last day, so Jan 31 renews Feb 28, then Mar 31.
+// Both arguments are civil dates (midnight UTC); ok is false when nothing
+// moved or the cycle is unknown.
+func NextRenewal(renewal time.Time, cycle string, customDays int32, today time.Time) (time.Time, bool) {
+	if !renewal.Before(today) {
+		return renewal, false
+	}
+	months := map[string]int{"monthly": 1, "quarterly": 3, "annual": 12}[cycle]
+	if cycle == "custom" {
+		if customDays <= 0 {
+			return renewal, false
+		}
+		gap := int(today.Sub(renewal).Hours() / 24)
+		steps := (gap + int(customDays) - 1) / int(customDays)
+		return renewal.AddDate(0, 0, steps*int(customDays)), true
+	}
+	if months == 0 {
+		return renewal, false
+	}
+	for k := 1; ; k++ {
+		next := addMonthsClamped(renewal, k*months)
+		if !next.Before(today) {
+			return next, true
+		}
+	}
+}
+
+func addMonthsClamped(date time.Time, months int) time.Time {
+	y, m, d := date.Date()
+	first := time.Date(y, m+time.Month(months), 1, 0, 0, 0, 0, time.UTC)
+	last := first.AddDate(0, 1, -1).Day()
+	if d > last {
+		d = last
+	}
+	return time.Date(first.Year(), first.Month(), d, 0, 0, 0, 0, time.UTC)
+}
+
+// Today returns now as a civil date in loc, at midnight UTC like a Postgres date.
+func Today(now time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	return dateOnly(now, loc)
+}
