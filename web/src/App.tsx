@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { api, clearCsrf, explain, setCsrf } from "./api";
+import { ApiError, api, clearCsrf, explain, setCsrf } from "./api";
 import { secretKey, splitBackup } from "./import";
 import { TeamPage } from "./team";
 import type { Account, SessionUser, WorkspaceData } from "./types";
 import type { OpenVault } from "./vault";
+import { Fingerprint } from "./verify";
 import { CategoryNav, Workspace } from "./workspace";
 
 const VaultPage = lazy(() => import("./vault").then((mod) => ({ default: mod.VaultPage })));
@@ -17,6 +18,7 @@ export function App() {
   const [open, setOpen] = useState<OpenVault | null>(null);
   const [view, setView] = useState<View>("services");
   const [category, setCategory] = useState("all");
+  const [reenroll, setReenroll] = useState(false);
 
   async function loadSession() {
     try {
@@ -98,7 +100,19 @@ export function App() {
     }
     const { savePassword: storePassword } = await import("./crypto/session");
     const itemVersion = account.vault_item_id ? open.versions[account.vault_item_id] : undefined;
-    const saved = await storePassword(open.vault, open.vaultKey, account.id, account.vault_item_id, password, itemVersion);
+    let saved: { id: string; version: number };
+    try {
+      saved = await storePassword(open.vault, open.vaultKey, account.id, account.vault_item_id, password, itemVersion);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "item_conflict") {
+        // Load what the other person saved; the field keeps this person's text.
+        const { loadPasswords } = await import("./crypto/session");
+        const latest = await loadPasswords(open.vault, open.vaultKey);
+        setOpen({ ...open, ...latest });
+        throw new ApiError(409, "item_conflict_reloaded");
+      }
+      throw err;
+    }
     setOpen({
       ...open,
       passwords: { ...open.passwords, [saved.id]: password },
@@ -119,11 +133,18 @@ export function App() {
   if (!user) {
     return <Login error={new URLSearchParams(window.location.search).get("error")} />;
   }
-  if (user.status === "pending_enrollment") {
-    return <Enroll onDone={loadSession} />;
+  if (user.status === "pending_enrollment" || reenroll) {
+    return (
+      <Enroll
+        onDone={async () => {
+          setReenroll(false);
+          await loadSession();
+        }}
+      />
+    );
   }
   if (user.status !== "active") {
-    return <Pending user={user} onDone={loadSession} />;
+    return <Pending user={user} onDone={loadSession} onRestart={() => setReenroll(true)} />;
   }
 
   return (
@@ -140,7 +161,7 @@ export function App() {
             <button className={view === "vault" ? "active" : ""} onClick={() => choose("vault")}>
               Vault
             </button>
-            {user.role === "admin" && (
+            {user.role === "admin" && status !== "rejected" && (
               <button className={view === "team" ? "active" : ""} onClick={() => choose("team")}>
                 Team
               </button>
@@ -247,89 +268,221 @@ function Login({ error }: { error: string | null }) {
   );
 }
 
+// StepRail shows where the first-run path is: invite, key, approval.
+function StepRail({ step }: { step: 1 | 2 | 3 }) {
+  const steps = ["invite", "key", "approval"];
+  return (
+    <ol className="step-rail" aria-label="Setup progress">
+      {steps.map((label, index) => {
+        const n = index + 1;
+        const state = n < step ? "done" : n === step ? "current" : "next";
+        return (
+          <li key={label} className={state} aria-current={state === "current" ? "step" : undefined}>
+            [{state === "done" ? "✓" : n} {label}]
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+type Draft = { body: Record<string, string | number>; recoveryKey: string; fingerprint: string };
+
+// Enroll creates the personal key in three steps. Each step that cannot be
+// undone gets its own screen: the passphrase locks once the key exists, the
+// recovery key is shown once and must be confirmed, and the fingerprint is
+// shown for the admin to compare.
 function Enroll({ onDone }: { onDone: () => Promise<void> }) {
   const [passphrase, setPassphrase] = useState("");
   const [again, setAgain] = useState("");
-  const [recovery, setRecovery] = useState("");
-  const [draft, setDraft] = useState<Record<string, string | number> | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const groups = draft ? draft.recoveryKey.match(/.{1,4}/g) ?? [] : [];
+  const lastGroup = groups[groups.length - 1] ?? "";
+
+  function startOver() {
+    setDraft(null);
+    setConfirmed(false);
+    setTyped("");
+    setPassphrase("");
+    setAgain("");
+    setError("");
+  }
 
   return (
     <div className="auth-wrap">
       <AuthBrand />
-      <form
-        className="auth-card"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (passphrase.length < 12) {
-            setError("The passphrase must be at least 12 characters.");
-            return;
-          }
-          if (passphrase !== again) {
-            setError("The passphrases do not match.");
-            return;
-          }
-          setBusy(true);
-          setError("");
-          const submit = async () => {
-            let body = draft;
-            if (!body) {
-              const { createIdentity } = await import("./crypto/session");
-              const created = await createIdentity(passphrase);
-              setRecovery(created.recoveryKey);
-              setDraft(created.body);
+      <StepRail step={2} />
+      {!draft && (
+        <form
+          className="auth-card"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (passphrase.length < 12) {
+              setError("The passphrase must be at least 12 characters.");
               return;
             }
-            if (!saved) {
-              setError("Save the recovery key, then continue.");
+            if (passphrase !== again) {
+              setError("The passphrases do not match.");
               return;
             }
-            const { fingerprint: _ignored, ...posted } = body;
-            await api("/api/v1/crypto/identity", "POST", posted);
-            await onDone();
-          };
-          submit()
-            .catch((err) => setError(explain(err)))
-            .finally(() => setBusy(false));
-        }}
-      >
-        <h1>Create your personal key</h1>
-        <p className="intro">The passphrase never leaves this browser. Your personal recovery key is shown once.</p>
-        {error && <div className="banner bad">{error}</div>}
-        <label className="field">
-          <span>Passphrase</span>
-          <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="new-password" required disabled={draft !== null} />
-        </label>
-        <label className="field">
-          <span>Repeat</span>
-          <input type="password" value={again} onChange={(event) => setAgain(event.target.value)} autoComplete="new-password" required disabled={draft !== null} />
-        </label>
-        {recovery && (
-          <>
-            <p className="secret-once">{recovery}</p>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} /> I saved my personal recovery key
-            </label>
-          </>
-        )}
-        <button className="btn primary" disabled={busy || (recovery !== "" && !saved)}>
-          {busy ? "Deriving key…" : recovery ? "Submit key for approval" : "Create key"}
-        </button>
-      </form>
+            setBusy(true);
+            setError("");
+            import("./crypto/session")
+              .then(async ({ createIdentity }) => {
+                const created = await createIdentity(passphrase);
+                setDraft({ body: created.body, recoveryKey: created.recoveryKey, fingerprint: String(created.body.fingerprint) });
+                setPassphrase("");
+                setAgain("");
+              })
+              .catch((err) => setError(explain(err)))
+              .finally(() => setBusy(false));
+          }}
+        >
+          <h1>Create your personal key</h1>
+          <p className="intro">Your passphrase unlocks the vault on this and other devices. It never leaves this browser and is separate from your Authentik password.</p>
+          {error && <div className="banner bad">{error}</div>}
+          <label className="field">
+            <span>Passphrase (12+ characters)</span>
+            <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="new-password" required />
+          </label>
+          <label className="field">
+            <span>Repeat</span>
+            <input type="password" value={again} onChange={(event) => setAgain(event.target.value)} autoComplete="new-password" required />
+          </label>
+          <button className="btn primary" disabled={busy}>
+            {busy ? "Deriving key… (a few seconds)" : "Create key"}
+          </button>
+        </form>
+      )}
+      {draft && !confirmed && (
+        <form
+          className="auth-card"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (typed.trim() !== lastGroup) {
+              setError("That is not the last group of your recovery key.");
+              return;
+            }
+            setError("");
+            setConfirmed(true);
+          }}
+        >
+          <h1>Save your recovery key</h1>
+          <div className="banner">If you lose both your passphrase and this key, nobody, including admins, can open your passwords. Resetting your Authentik password does not help.</div>
+          <p className="secret-once" aria-label="Recovery key">
+            {groups.join(" ")}
+          </p>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                navigator.clipboard?.writeText(draft.recoveryKey).then(
+                  () => setError(""),
+                  () => setError("Copy failed. Select the key and copy it by hand."),
+                );
+              }}
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(new Blob([`BorisYeltsin recovery key\n${draft.recoveryKey}\n`], { type: "text/plain" }));
+                link.download = "borisyeltsin-recovery-key.txt";
+                link.click();
+                URL.revokeObjectURL(link.href);
+              }}
+            >
+              Download .txt
+            </button>
+          </div>
+          <label className="field">
+            <span>Type the last group to confirm you saved it</span>
+            <input value={typed} onChange={(event) => setTyped(event.target.value)} autoComplete="off" spellCheck={false} autoCapitalize="off" required />
+          </label>
+          {error && <p className="import-error">{error}</p>}
+          <button className="btn primary">Continue</button>
+          <button type="button" className="text-button" onClick={startOver}>
+            Start over (this key will not be used)
+          </button>
+        </form>
+      )}
+      {draft && confirmed && (
+        <div className="auth-card">
+          <h1>Your key fingerprint</h1>
+          <p className="intro">An admin approves your key after comparing this fingerprint with you, on a call or in person.</p>
+          <Fingerprint value={draft.fingerprint} label="Your fingerprint" />
+          {error && <div className="banner bad">{error}</div>}
+          <button
+            className="btn primary"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setError("");
+              const { fingerprint: _ignored, ...posted } = draft.body;
+              api("/api/v1/crypto/identity", "POST", posted)
+                .then(onDone)
+                .catch((err) => setError(explain(err)))
+                .finally(() => setBusy(false));
+            }}
+          >
+            {busy ? "Sending…" : "Send key for approval"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function Pending({ user, onDone }: { user: SessionUser; onDone: () => Promise<void> }) {
+// Pending turns waiting into the verification step the admin needs anyway.
+function Pending({ user, onDone, onRestart }: { user: SessionUser; onDone: () => Promise<void>; onRestart: () => void }) {
   const [error, setError] = useState("");
+  const [fingerprint, setFingerprint] = useState("");
+  const [status, setStatus] = useState("");
+  const [checked, setChecked] = useState(Date.now());
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    api<{ fingerprint?: string; status: string }>("/api/v1/crypto/me")
+      .then((me) => {
+        setFingerprint(me.fingerprint ?? "");
+        setStatus(me.status);
+      })
+      .catch((err) => setError(explain(err)));
+    const poll = window.setInterval(() => {
+      onDone().finally(() => setChecked(Date.now()));
+    }, 15000);
+    const tick = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => {
+      window.clearInterval(poll);
+      window.clearInterval(tick);
+    };
+  }, []);
+
   return (
     <div className="auth-wrap">
       <AuthBrand />
-      <div className="auth-card stack">
-        <h1>Your key is waiting for an admin</h1>
-        <p className="intro">The ledger stays closed until your key is approved. If you are the only admin, approve your own key.</p>
+      <StepRail step={3} />
+      <div className="auth-card">
+        <h1>{status === "rejected" ? "Your key was rejected" : "Waiting for an admin"}</h1>
+        <p className="intro">
+          {status === "rejected"
+            ? "Ask your admin why, then create a new key and compare its fingerprint with them."
+            : "Read this fingerprint to your admin when they verify you. This page opens the app by itself once your key is approved."}
+        </p>
+        {fingerprint && status !== "rejected" && <Fingerprint value={fingerprint} label="Your fingerprint" />}
+        {status === "rejected" && (
+          <button className="btn primary" onClick={onRestart}>
+            Create a new key
+          </button>
+        )}
         {error && <div className="banner bad">{error}</div>}
         {user.role === "admin" && (
           <button
@@ -340,9 +493,13 @@ function Pending({ user, onDone }: { user: SessionUser; onDone: () => Promise<vo
                 .catch((err) => setError(explain(err)));
             }}
           >
-            Approve my key
+            Approve my key (only while you are the sole user)
           </button>
         )}
+        <p className="status-line" role="status">
+          &gt; waiting for approval · checked {Math.max(0, Math.round((now - checked) / 1000))}s ago
+          <span className="cursor" aria-hidden="true" />
+        </p>
       </div>
     </div>
   );

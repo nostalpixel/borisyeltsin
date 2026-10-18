@@ -86,6 +86,15 @@ func (s *Server) createVault(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, "bad_vault")
 		return
 	}
+	// One vault per organization for now; members share it instead of
+	// starting their own.
+	if count, err := s.Q.CountVaults(r.Context(), p.OrgID); err != nil {
+		s.sendError(w, err)
+		return
+	} else if count > 0 {
+		s.fail(w, http.StatusConflict, "vault_exists")
+		return
+	}
 	tx, err := s.Pool.Begin(r.Context())
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, "server")
@@ -127,9 +136,25 @@ func (s *Server) getVault(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
+	holders, err := s.Q.ListEnvelopeHolders(r.Context(), db.ListEnvelopeHoldersParams{VaultID: id, KeyVersion: vault.KeyVersion})
+	if err != nil {
+		s.sendError(w, err)
+		return
+	}
+	hasKey := map[uuid.UUID]bool{}
+	for _, holder := range holders {
+		hasKey[holder] = true
+	}
+	out := make([]map[string]any, 0, len(members))
+	for _, member := range members {
+		out = append(out, map[string]any{
+			"user_id": member.UserID, "role": member.Role, "display_name": member.DisplayName,
+			"email": member.Email, "has_key": hasKey[member.UserID],
+		})
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"id": vault.ID, "name": vault.Name, "description": vault.Description,
-		"key_version": vault.KeyVersion, "rotation_required": vault.RotationRequired, "members": members,
+		"id": vault.ID, "name": vault.Name, "description": vault.Description, "initialized": vault.Initialized,
+		"key_version": vault.KeyVersion, "rotation_required": vault.RotationRequired, "members": out,
 	})
 }
 

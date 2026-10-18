@@ -746,3 +746,175 @@ dialog h2 {
 .account .secret-once {
   margin: var(--s2) 0;
 }
+
+/* Tabs (Vault, Team). */
+.tabs {
+  display: flex;
+  gap: var(--s1);
+  margin: var(--s5) 0 var(--s4);
+  border-bottom: 1px solid var(--line-soft);
+  overflow-x: auto;
+}
+.tab {
+  min-height: 44px;
+  padding: var(--s2) var(--s4);
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  white-space: nowrap;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--primary);
+}
+
+/* Generic bordered table for people, keys, invitations, audit. */
+.data-table {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  min-width: 0;
+}
+.data-head,
+.data-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(90px, 0.7fr) minmax(140px, 1fr) minmax(160px, auto);
+  gap: var(--s4);
+  align-items: center;
+  padding: var(--s3) var(--s4);
+}
+.data-head.audit,
+.data-row.audit {
+  grid-template-columns: 190px minmax(160px, 1fr) minmax(100px, 0.5fr);
+}
+.data-head {
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.data-row + .data-row {
+  border-top: 1px solid var(--line-soft);
+}
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s2);
+}
+.inline-select {
+  min-height: 36px;
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.panel {
+  padding: var(--s5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.panel h2 {
+  margin: 0;
+}
+.stack {
+  display: grid;
+  gap: var(--s3);
+}
+.stack.wide {
+  gap: var(--s4);
+  max-width: 720px;
+}
+.split {
+  display: grid;
+  grid-template-columns: minmax(280px, 400px) minmax(0, 1fr);
+  gap: var(--s4);
+  align-items: start;
+}
+.inline-form {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(180px, 260px) auto;
+  gap: var(--s3);
+  align-items: end;
+  margin-top: var(--s4);
+}
+.prose {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.5;
+  max-width: 70ch;
+}
+
+/* Fingerprints and other values read aloud: 18px mono groups. */
+.fingerprint {
+  margin: 0;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.fingerprint figcaption {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: var(--s2);
+}
+.fingerprint p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s4);
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0.04em;
+}
+
+dialog.verify {
+  width: min(560px, calc(100vw - 32px));
+}
+
+/* First-run progress: [✓ invite] ─ [2 key] ─ [3 approval] */
+.step-rail {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+}
+.step-rail li + li::before {
+  content: "─ ";
+  color: var(--line);
+}
+.step-rail .current {
+  color: var(--text);
+}
+.step-rail .done {
+  color: var(--ok);
+}
+
+@media (max-width: 760px) {
+  .data-head {
+    display: none;
+  }
+  .data-row,
+  .data-row.audit {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s1);
+  }
+  .row-actions {
+    justify-content: flex-start;
+  }
+  .split,
+  .inline-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

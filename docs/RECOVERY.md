@@ -16,10 +16,14 @@ The interface shows the recovery key once, in standard base64. Store it outside 
 To unlock after a lost passphrase:
 
 1. Sign in through Authentik. The account still needs a valid session and an approved key.
-2. Open the vault page and choose "Unlock with recovery key".
+2. Open the Vault page and choose "Unlock with recovery key".
 3. Paste the recovery key. The browser opens the second secretbox and checks the fingerprint of the approved public key. A mismatch wipes the private key and stops.
 
 This does not replace a rejected or revoked key. A new public key is a proposal and still needs a different admin to approve it.
+
+## Changing a passphrase
+
+Vault › Recovery › Change your passphrase rewraps the same private key under the new passphrase. The public key, its approval and every envelope stay as they are, so nothing has to be shared again. The personal recovery key keeps working.
 
 ## Organization recovery enrollment
 
@@ -37,7 +41,7 @@ Vault items stay blocked until two custodians exist and a recovery envelope is s
 Both custodians bring their unsealed shares to one browser. One share is not enough, and the server will not combine them.
 
 1. Each custodian unlocks their own identity on a machine they trust, reveals their share, and carries it to the recovery machine. Prefer a machine one of them controls. Do not send shares through the application chat, email, or a ticket.
-2. On the vault page, paste share 1 and share 2 into the rotation form. Rotation needs a vault owner who can still open the vault: it builds a new vault key, re-encrypts items, and writes new member envelopes plus a new recovery envelope sealed under the combined key.
+2. On Vault › Recovery, paste share 1 and share 2 into the rotation form. Every member's key must already be verified in that browser. Rotation needs a vault owner who can still open the vault: it builds a new vault key, re-encrypts items, and writes new member envelopes plus a new recovery envelope sealed under the combined key.
 3. Clear the share fields. The people who saw the shares should assume those copies exist until they destroy them.
 
 Rotation refuses to run unless the organization is `recovery_ready` and the posted envelopes match the current members and their approved fingerprints.

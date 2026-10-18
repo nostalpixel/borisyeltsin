@@ -25,6 +25,7 @@ import {
   toB64,
 } from "./vault";
 import sodium from "libsodium-wrappers-sumo";
+import { requireVerified } from "./pins";
 
 export type IdentityRecord = {
   status: string;
@@ -81,7 +82,13 @@ export async function unlockIdentity(passphrase: string): Promise<HeldKeys> {
     throw new Error("weak_kdf");
   }
   const kek = deriveKek(passphrase, fromB64(me.kdf_salt), me.kdf_opslimit ?? KDF_OPSLIMIT, me.kdf_memlimit ?? KDF_MEMLIMIT);
-  const privateKey = secretboxOpen({ nonce: fromB64(me.private_key_nonce), ciphertext: fromB64(me.private_key_ciphertext) }, kek);
+  let privateKey: Uint8Array;
+  try {
+    privateKey = secretboxOpen({ nonce: fromB64(me.private_key_nonce), ciphertext: fromB64(me.private_key_ciphertext) }, kek);
+  } catch {
+    sodium.memzero(kek);
+    throw new Error("bad_passphrase");
+  }
   sodium.memzero(kek);
   const publicKey = fromB64(me.public_key);
   const fp = await fingerprint(publicKey);
@@ -167,7 +174,41 @@ export async function newVaultKey(): Promise<Uint8Array> {
 
 export type CustodianChoice = { user_id: string; fingerprint: string; public_key: string };
 
-export async function enrollRecovery(first: CustodianChoice, second: CustodianChoice, vault: VaultInfo, vaultKey: Uint8Array) {
+// shareVaultKey seals the current vault key to a member whose key this
+// browser has verified. It never seals to a key it only got from the server.
+export async function shareVaultKey(viewerId: string, vault: VaultInfo, vaultKey: Uint8Array, member: CustodianChoice) {
+  requireVerified(viewerId, member.user_id, member.fingerprint);
+  await sodiumReady();
+  const sealed = sealVaultKey(vault.id, vault.key_version, vaultKey, fromB64(member.public_key));
+  await api(`/api/v1/vaults/${vault.id}/envelopes`, "POST", {
+    user_id: member.user_id,
+    fingerprint: member.fingerprint,
+    ciphertext: toB64(sealed),
+    expected_key_version: vault.key_version,
+  });
+}
+
+// changePassphrase rewraps the same private key under a new passphrase. The
+// public key, its approval and every envelope stay as they are.
+export async function changePassphrase(keys: HeldKeys, passphrase: string) {
+  await sodiumReady();
+  const salt = randomBytes(sodium.crypto_pwhash_SALTBYTES);
+  const kek = passphraseKek(passphrase, salt);
+  const backup = secretbox(keys.privateKey, kek);
+  sodium.memzero(kek);
+  await api("/api/v1/crypto/identity/passphrase", "PUT", {
+    fingerprint: keys.fingerprint,
+    kdf_opslimit: KDF_OPSLIMIT,
+    kdf_memlimit: KDF_MEMLIMIT,
+    kdf_salt: toB64(salt),
+    private_key_nonce: toB64(backup.nonce),
+    private_key_ciphertext: toB64(backup.ciphertext),
+  });
+}
+
+export async function enrollRecovery(viewerId: string, first: CustodianChoice, second: CustodianChoice, vault: VaultInfo, vaultKey: Uint8Array) {
+  requireVerified(viewerId, first.user_id, first.fingerprint);
+  requireVerified(viewerId, second.user_id, second.fingerprint);
   await sodiumReady();
   const org = randomBytes(32);
   const { share1, share2 } = splitKey(org);
@@ -248,7 +289,7 @@ export async function savePassword(
   return { id, version: created.version };
 }
 
-export async function rotateVault(vault: VaultInfo, vaultKey: Uint8Array, share1: string, share2: string) {
+export async function rotateVault(viewerId: string, vault: VaultInfo, vaultKey: Uint8Array, share1: string, share2: string) {
   await sodiumReady();
   const org = combineShares(fromB64(share1), fromB64(share2));
   const nextKey = randomBytes(32);
@@ -269,6 +310,7 @@ export async function rotateVault(vault: VaultInfo, vaultKey: Uint8Array, share1
     if (!pub) {
       throw new Error("fingerprint_mismatch");
     }
+    requireVerified(viewerId, member.user_id, pub.fingerprint);
     return {
       user_id: member.user_id,
       fingerprint: pub.fingerprint,
