@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/nostalpixel/borisyeltsin/internal/authz"
@@ -31,6 +32,10 @@ func (s *Server) metaVault(ctx context.Context, p Principal, vaultID uuid.UUID) 
 	}
 	_, _, err = s.memberVault(ctx, p, vaultID)
 	if err != nil {
+		// A custodian with a live recovery grant may read the vault to recover it.
+		if _, ok := liveGrant(ctx, s.Q, p, vaultID); ok {
+			return vault, nil
+		}
 		return db.Vault{}, err
 	}
 	return vault, nil
@@ -398,8 +403,10 @@ func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := requireItemAccess(r.Context(), s.Q, p, vault, false); err != nil {
-		s.sendError(w, err)
-		return
+		if _, ok := liveGrant(r.Context(), s.Q, p, vaultID); !ok {
+			s.sendError(w, err)
+			return
+		}
 	}
 	rows, err := s.Q.ListVaultItems(r.Context(), vaultID)
 	if err != nil {
@@ -451,11 +458,14 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 		if err := staleKey(body.ExpectedKeyVersion, vault); err != nil {
 			return err
 		}
-		org, err := q.GetOrganization(r.Context(), p.OrgID)
-		if err != nil || !org.RecoveryReady {
+		ready, err := recoveryReady(r.Context(), q, p.OrgID)
+		if err != nil {
+			return err
+		}
+		if ready == nil {
 			return errStatus(http.StatusConflict, "recovery_not_ready")
 		}
-		if _, err := q.GetRecoveryEnvelope(r.Context(), db.GetRecoveryEnvelopeParams{VaultID: vaultID, KeyVersion: vault.KeyVersion}); err != nil {
+		if env, err := q.GetRecoveryEnvelope(r.Context(), db.GetRecoveryEnvelopeParams{VaultID: vaultID, KeyVersion: vault.KeyVersion}); err != nil || env.Epoch != ready.Epoch {
 			return errStatus(http.StatusConflict, "recovery_envelope_missing")
 		}
 		row, err = q.InsertVaultItem(r.Context(), db.InsertVaultItemParams{
@@ -583,7 +593,7 @@ type rotationBody struct {
 		Ciphertext  string    `json:"ciphertext"`
 	} `json:"envelopes"`
 	Recovery struct {
-		Nonce      string `json:"nonce"`
+		Epoch      int32  `json:"epoch"`
 		Ciphertext string `json:"ciphertext"`
 	} `json:"recovery"`
 }
@@ -596,10 +606,11 @@ type preparedItem struct {
 }
 
 type preparedRotation struct {
-	items    []preparedItem
-	envs     [][]byte
-	recNonce []byte
-	recCT    []byte
+	items  []preparedItem
+	envs   [][]byte
+	target *db.RecoveryEpoch
+	recCT  []byte
+	drop   []uuid.UUID
 }
 
 // validateRotation checks a rotation against the locked vault state:
@@ -608,8 +619,13 @@ type preparedRotation struct {
 //	items         same id set as the live items                  else 409 items_changed
 //	              same version per item                          else 409 item_conflict
 //	envelopes     exactly one per member, approved fingerprint   else 400
-//	recovery      org recovery_ready, 24-byte nonce, 48-byte box else 409 / 400
-func validateRotation(ctx context.Context, q *db.Queries, org uuid.UUID, vault db.Vault, body rotationBody) (preparedRotation, error) {
+//	              under a recovery grant: any subset of members
+//	              that includes the recovering custodian
+//	recovery      sealed to the seal target, if there is one     else 409 / 400
+//	              under a recovery grant: absent
+//
+// recoverer is uuid.Nil for a normal rotation.
+func validateRotation(ctx context.Context, q *db.Queries, org uuid.UUID, vault db.Vault, body rotationBody, recoverer uuid.UUID) (preparedRotation, error) {
 	var out preparedRotation
 	if body.ExpectedVersion != vault.KeyVersion {
 		return out, errStatus(http.StatusConflict, "version_conflict")
@@ -645,12 +661,16 @@ func validateRotation(ctx context.Context, q *db.Queries, org uuid.UUID, vault d
 	if err != nil {
 		return out, err
 	}
-	if len(body.Envelopes) != len(members) {
+	recovering := recoverer != uuid.Nil
+	if !recovering && len(body.Envelopes) != len(members) {
 		return out, errStatus(http.StatusBadRequest, "envelope_set")
 	}
 	wanted := map[uuid.UUID]bool{}
 	for _, member := range members {
 		wanted[member.UserID] = true
+	}
+	if recovering {
+		wanted[recoverer] = true
 	}
 	envSeen := map[uuid.UUID]bool{}
 	for _, env := range body.Envelopes {
@@ -668,25 +688,36 @@ func validateRotation(ctx context.Context, q *db.Queries, org uuid.UUID, vault d
 		}
 		out.envs = append(out.envs, ct)
 	}
-	orgRow, err := q.GetOrganization(ctx, org)
-	if err != nil || !orgRow.RecoveryReady {
-		return out, errStatus(http.StatusConflict, "recovery_not_ready")
+	if recovering {
+		if !envSeen[recoverer] {
+			return out, errStatus(http.StatusBadRequest, "envelope_set")
+		}
+		for _, member := range members {
+			if !envSeen[member.UserID] {
+				out.drop = append(out.drop, member.UserID)
+			}
+		}
+		if body.Recovery.Ciphertext != "" {
+			return out, errStatus(http.StatusBadRequest, "recovery_envelope_not_allowed")
+		}
+		return out, nil
 	}
-	out.recNonce, out.recCT, err = recoveryBox(body.Recovery.Nonce, body.Recovery.Ciphertext)
+	out.target, err = sealTarget(ctx, q, org)
+	if err != nil {
+		return out, err
+	}
+	if out.target == nil {
+		// No usable recovery key (none, degraded or spent): seal nothing to it.
+		if body.Recovery.Ciphertext != "" {
+			return out, errStatus(http.StatusConflict, "recovery_not_ready")
+		}
+		return out, nil
+	}
+	if body.Recovery.Epoch != out.target.Epoch {
+		return out, errStatus(http.StatusConflict, "recovery_epoch_changed")
+	}
+	out.recCT, err = recoveryEnvelope(body.Recovery.Ciphertext)
 	return out, err
-}
-
-// recoveryBox decodes a secretbox of a 32-byte vault key: 24-byte nonce, 48-byte box.
-func recoveryBox(nonceRaw, ctRaw string) ([]byte, []byte, error) {
-	nonce, err := decodeB64(nonceRaw, 24, 0, 0)
-	if err != nil {
-		return nil, nil, errStatus(http.StatusBadRequest, "bad_envelope")
-	}
-	ct, err := decodeB64(ctRaw, 48, 0, 0)
-	if err != nil {
-		return nil, nil, errStatus(http.StatusBadRequest, "bad_envelope")
-	}
-	return nonce, ct, nil
 }
 
 func (s *Server) rotateVault(w http.ResponseWriter, r *http.Request) {
@@ -702,10 +733,18 @@ func (s *Server) rotateVault(w http.ResponseWriter, r *http.Request) {
 	}
 	next := body.ExpectedVersion + 1
 	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
+		// A key-holding owner rotates normally. Without that, only a custodian
+		// with a live recovery grant may rotate, once (docs/CRYPTO.md "Recovering").
+		recoverer := uuid.Nil
+		var grant db.RecoveryGrant
 		if err := requireKeyOwner(r.Context(), q, p, vault); err != nil {
-			return err
+			var ok bool
+			if grant, ok = liveGrant(r.Context(), q, p, vaultID); !ok {
+				return err
+			}
+			recoverer = p.UserID
 		}
-		prepared, err := validateRotation(r.Context(), q, p.OrgID, vault, body)
+		prepared, err := validateRotation(r.Context(), q, p.OrgID, vault, body, recoverer)
 		if err != nil {
 			return err
 		}
@@ -741,16 +780,20 @@ func (s *Server) rotateVault(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		if err := q.UpsertRecoveryEnvelope(r.Context(), db.UpsertRecoveryEnvelopeParams{
-			VaultID: vaultID, KeyVersion: next, Nonce: prepared.recNonce, Ciphertext: prepared.recCT,
-		}); err != nil {
-			return err
-		}
 		if err := q.DeleteRecoveryEnvelopesExceptVersion(r.Context(), db.DeleteRecoveryEnvelopesExceptVersionParams{VaultID: vaultID, KeyVersion: next}); err != nil {
 			return err
 		}
-		if _, err := q.BumpVaultKeyVersion(r.Context(), db.BumpVaultKeyVersionParams{ID: vaultID, KeyVersion: body.ExpectedVersion}); err != nil {
+		bumped, err := q.BumpVaultKeyVersion(r.Context(), db.BumpVaultKeyVersionParams{ID: vaultID, KeyVersion: body.ExpectedVersion})
+		if err != nil {
 			return errStatus(http.StatusConflict, "version_conflict")
+		}
+		if recoverer != uuid.Nil {
+			return finishRecovery(r.Context(), q, p, vaultID, grant, prepared.drop)
+		}
+		if prepared.target != nil {
+			if err := writeRecoveryEnvelope(r.Context(), q, p, bumped, *prepared.target, prepared.recCT); err != nil {
+				return err
+			}
 		}
 		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "vault_rotated", "vault", vaultID.String(), nil)
 	})
@@ -761,181 +804,31 @@ func (s *Server) rotateVault(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"key_version": next})
 }
 
-func (s *Server) putRecovery(w http.ResponseWriter, r *http.Request) {
-	p, _ := principalFrom(r)
-	if err := s.requireAdmin(p); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	var body struct {
-		Custodians []struct {
-			UserID      uuid.UUID `json:"user_id"`
-			ShareIndex  int16     `json:"share_index"`
-			Fingerprint string    `json:"fingerprint"`
-			Ciphertext  string    `json:"share_ciphertext"`
-		} `json:"custodians"`
-	}
-	if !s.decode(w, r, &body) || len(body.Custodians) != 2 {
-		s.fail(w, http.StatusBadRequest, "bad_recovery")
-		return
-	}
-	if body.Custodians[0].UserID == body.Custodians[1].UserID {
-		s.fail(w, http.StatusBadRequest, "bad_recovery")
-		return
-	}
-	indexes := map[int16]bool{}
-	for _, custodian := range body.Custodians {
-		ident, err := s.approvedKey(r.Context(), p.OrgID, custodian.UserID)
-		if err != nil || ident.Fingerprint != custodian.Fingerprint {
-			s.fail(w, http.StatusBadRequest, "fingerprint_mismatch")
-			return
-		}
-		if custodian.ShareIndex != 1 && custodian.ShareIndex != 2 {
-			s.fail(w, http.StatusBadRequest, "bad_recovery")
-			return
-		}
-		indexes[custodian.ShareIndex] = true
-		if _, err := decodeB64(custodian.Ciphertext, 0, 48, 8192); err != nil {
-			s.fail(w, http.StatusBadRequest, "bad_recovery")
-			return
-		}
-	}
-	if !indexes[1] || !indexes[2] {
-		s.fail(w, http.StatusBadRequest, "bad_recovery")
-		return
-	}
-	tx, err := s.Pool.Begin(r.Context())
-	if err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	q := s.Q.WithTx(tx)
-	if err := q.DeleteCustodians(r.Context(), p.OrgID); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	for _, custodian := range body.Custodians {
-		raw, _ := decodeB64(custodian.Ciphertext, 0, 48, 8192)
-		if err := q.InsertCustodian(r.Context(), db.InsertCustodianParams{
-			OrganizationID: p.OrgID, UserID: custodian.UserID, ShareIndex: custodian.ShareIndex,
-			ShareCiphertext: raw, Fingerprint: custodian.Fingerprint,
-		}); err != nil {
-			s.sendError(w, err)
-			return
-		}
-	}
-	if err := q.SetRecoveryReady(r.Context(), db.SetRecoveryReadyParams{ID: p.OrgID, RecoveryReady: true}); err != nil {
-		s.sendError(w, err)
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
-	}
-	s.audit(r.Context(), p.OrgID, &p.UserID, "recovery_enrolled", "organization", p.OrgID.String(), nil)
-	s.writeJSON(w, http.StatusOK, map[string]bool{"recovery_ready": true})
-}
-
-func (s *Server) getRecovery(w http.ResponseWriter, r *http.Request) {
-	p, _ := principalFrom(r)
-	rows, err := s.Q.ListCustodians(r.Context(), p.OrgID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	org, err := s.Q.GetOrganization(r.Context(), p.OrgID)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	out := []map[string]any{}
-	for _, row := range rows {
-		out = append(out, map[string]any{
-			"user_id": row.UserID, "display_name": row.DisplayName, "email": row.Email,
-			"share_index": row.ShareIndex, "fingerprint": row.Fingerprint,
-		})
-	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"recovery_ready": org.RecoveryReady, "custodians": out})
-}
-
-func (s *Server) getRecoveryShare(w http.ResponseWriter, r *http.Request) {
-	p, _ := principalFrom(r)
-	row, err := s.Q.GetCustodianShare(r.Context(), db.GetCustodianShareParams{OrganizationID: p.OrgID, UserID: p.UserID})
-	if err != nil {
-		s.fail(w, http.StatusNotFound, "not_found")
-		return
-	}
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"share_index": row.ShareIndex, "fingerprint": row.Fingerprint, "share_ciphertext": encodeB64(row.ShareCiphertext),
-	})
-}
-
-func (s *Server) putRecoveryEnvelope(w http.ResponseWriter, r *http.Request) {
-	p, _ := principalFrom(r)
-	vaultID, err := pathID(r, "vaultID")
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	var body struct {
-		Nonce              string `json:"nonce"`
-		Ciphertext         string `json:"ciphertext"`
-		ExpectedKeyVersion int32  `json:"expected_key_version"`
-	}
-	if !s.decode(w, r, &body) {
-		return
-	}
-	nonce, ct, err := recoveryBox(body.Nonce, body.Ciphertext)
-	if err != nil {
-		s.sendError(w, err)
-		return
-	}
-	err = s.withVaultLock(r.Context(), p.OrgID, vaultID, func(q *db.Queries, vault db.Vault) error {
-		if err := requireKeyOwner(r.Context(), q, p, vault); err != nil {
+// finishRecovery completes a rotation made under a recovery grant: members
+// left out lose access, the custodian becomes an owner, the grant is used and
+// the epoch is spent, because its private key was just whole in one browser.
+func finishRecovery(ctx context.Context, q *db.Queries, p Principal, vaultID uuid.UUID, grant db.RecoveryGrant, drop []uuid.UUID) error {
+	for _, userID := range drop {
+		if err := q.DeleteVaultMember(ctx, db.DeleteVaultMemberParams{VaultID: vaultID, UserID: userID}); err != nil {
 			return err
 		}
-		if err := staleKey(body.ExpectedKeyVersion, vault); err != nil {
-			return err
-		}
-		if err := q.UpsertRecoveryEnvelope(r.Context(), db.UpsertRecoveryEnvelopeParams{
-			VaultID: vaultID, KeyVersion: vault.KeyVersion, Nonce: nonce, Ciphertext: ct,
-		}); err != nil {
-			return err
-		}
-		return auditTx(r.Context(), q, p.OrgID, &p.UserID, "recovery_envelope_written", "vault", vaultID.String(), nil)
-	})
-	if err != nil {
-		s.sendError(w, err)
-		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func (s *Server) getRecoveryEnvelope(w http.ResponseWriter, r *http.Request) {
-	p, _ := principalFrom(r)
-	vaultID, err := pathID(r, "vaultID")
-	if err != nil {
-		s.sendError(w, err)
-		return
+	if err := q.UpsertVaultMember(ctx, db.UpsertVaultMemberParams{VaultID: vaultID, UserID: p.UserID, Role: "owner"}); err != nil {
+		return err
 	}
-	vault, err := s.Q.GetVault(r.Context(), db.GetVaultParams{ID: vaultID, OrganizationID: p.OrgID})
-	if err != nil {
-		s.fail(w, http.StatusNotFound, "not_found")
-		return
+	if used, err := q.UseRecoveryGrant(ctx, grant.ID); err != nil {
+		return err
+	} else if used != 1 {
+		return errStatus(http.StatusForbidden, "grant_expired")
 	}
-	_, memberErr := s.Q.GetVaultMember(r.Context(), db.GetVaultMemberParams{VaultID: vaultID, UserID: p.UserID})
-	_, shareErr := s.Q.GetCustodianShare(r.Context(), db.GetCustodianShareParams{OrganizationID: p.OrgID, UserID: p.UserID})
-	if memberErr != nil && shareErr != nil {
-		s.fail(w, http.StatusNotFound, "not_found")
-		return
+	if err := q.SetEpochStatus(ctx, db.SetEpochStatusParams{OrganizationID: p.OrgID, Epoch: grant.Epoch, Status: "spent"}); err != nil {
+		return err
 	}
-	row, err := s.Q.GetRecoveryEnvelope(r.Context(), db.GetRecoveryEnvelopeParams{VaultID: vaultID, KeyVersion: vault.KeyVersion})
-	if err != nil {
-		s.fail(w, http.StatusNotFound, "not_found")
-		return
+	dropped := make([]string, 0, len(drop))
+	for _, id := range drop {
+		dropped = append(dropped, id.String())
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"key_version": row.KeyVersion, "nonce": encodeB64(row.Nonce), "ciphertext": encodeB64(row.Ciphertext),
+	return auditTx(ctx, q, p.OrgID, &p.UserID, "vault_recovered", "vault", vaultID.String(), map[string]string{
+		"epoch": itoa(grant.Epoch), "removed_members": strings.Join(dropped, ","),
 	})
 }

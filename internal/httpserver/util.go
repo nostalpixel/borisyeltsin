@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -192,4 +193,11 @@ func logoFrom(name, logo string) string {
 		return "?"
 	}
 	return string(runes)
+}
+
+func itoa(n int32) string { return strconv.FormatInt(int64(n), 10) }
+
+func atoi32(raw string) (int32, error) {
+	n, err := strconv.ParseInt(raw, 10, 32)
+	return int32(n), err
 }

@@ -12,15 +12,18 @@ import (
 	"github.com/nostalpixel/borisyeltsin/internal/db"
 )
 
-// vaultFixture is an organization with an owner who holds the vault key,
-// recovery ready, and a recovery envelope for key version 1.
+// vaultFixture is an organization with an owner who holds the vault key, an
+// active recovery epoch (custodians: the owner and a second user), and a
+// recovery envelope for key version 1.
 type vaultFixture struct {
-	srv     *Server
-	q       *db.Queries
-	h       http.Handler
-	org     db.Organization
-	owner   actor
-	vaultID string
+	srv       *Server
+	q         *db.Queries
+	h         http.Handler
+	org       db.Organization
+	owner     actor
+	custodian actor
+	recovery  recoveryKey
+	vaultID   string
 }
 
 func newVaultFixture(t *testing.T) vaultFixture {
@@ -39,13 +42,13 @@ func newVaultFixture(t *testing.T) vaultFixture {
 	}
 	var vault map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &vault)
-	f := vaultFixture{srv: srv, q: q, h: h, org: org, owner: owner, vaultID: vault["id"].(string)}
+	custodian := srv.addUser(t, q, org.ID, "member", "active")
+	approveKey(t, q, custodian.user.ID)
+	f := vaultFixture{srv: srv, q: q, h: h, org: org, owner: owner, custodian: custodian, vaultID: vault["id"].(string)}
 	f.envelope(t, &owner, owner.user.ID, 1, http.StatusOK)
-	if err := q.SetRecoveryReady(context.Background(), db.SetRecoveryReadyParams{ID: org.ID, RecoveryReady: true}); err != nil {
-		t.Fatal(err)
-	}
+	f.recovery = seedRecovery(t, q, org.ID, owner.user.ID, owner.user.ID, custodian.user.ID)
 	if rec := call(h, http.MethodPost, f.path("/recovery-envelope"), map[string]any{
-		"nonce": b64(24), "ciphertext": b64(48), "expected_key_version": 1,
+		"epoch": f.recovery.epoch, "ciphertext": b64(160), "expected_key_version": 1,
 	}, &owner); rec.Code != http.StatusOK {
 		t.Fatalf("recovery envelope %d %s", rec.Code, rec.Body.String())
 	}
@@ -120,9 +123,13 @@ func (f vaultFixture) rotation(by *actor, expected int, items []map[string]any, 
 		ident, _ := f.q.GetCryptoIdentity(context.Background(), id)
 		envs = append(envs, map[string]any{"user_id": id.String(), "fingerprint": ident.Fingerprint, "ciphertext": b64(80)})
 	}
+	target, _ := sealTarget(context.Background(), f.q, f.org.ID)
+	recovery := map[string]any{}
+	if target != nil {
+		recovery = map[string]any{"epoch": target.Epoch, "ciphertext": b64(160)}
+	}
 	rec := call(f.h, http.MethodPost, f.path("/rotation"), map[string]any{
-		"expected_key_version": expected, "items": items, "envelopes": envs,
-		"recovery": map[string]string{"nonce": b64(24), "ciphertext": b64(48)},
+		"expected_key_version": expected, "items": items, "envelopes": envs, "recovery": recovery,
 	}, by)
 	return rec.Code, rec.Body.String()
 }
@@ -202,7 +209,7 @@ func TestWritesUnderAnOldKeyAreRefused(t *testing.T) {
 	}
 	f.envelope(t, &f.owner, f.owner.user.ID, 1, http.StatusConflict)
 	rec = call(f.h, http.MethodPost, f.path("/recovery-envelope"), map[string]any{
-		"nonce": b64(24), "ciphertext": b64(48), "expected_key_version": 1,
+		"epoch": f.recovery.epoch, "ciphertext": b64(160), "expected_key_version": 1,
 	}, &f.owner)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("stale recovery envelope %d %s", rec.Code, rec.Body.String())

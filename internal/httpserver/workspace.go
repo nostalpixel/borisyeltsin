@@ -201,8 +201,13 @@ func (s *Server) workspace(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
+	ready, err := recoveryReady(r.Context(), s.Q, p.OrgID)
+	if err != nil {
+		s.sendError(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"organization":    map[string]any{"id": org.ID, "name": org.Name, "recovery_ready": org.RecoveryReady},
+		"organization":    map[string]any{"id": org.ID, "name": org.Name, "recovery_ready": ready != nil},
 		"services":        serviceOut,
 		"accounts":        accountOut,
 		"subscriptions":   subOut,

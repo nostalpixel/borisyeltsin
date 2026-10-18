@@ -34,6 +34,8 @@ It dumps the live database, restores the dump into a scratch database in the sam
 
 The drill proves the dump restores. It does not prove anyone can still open the vault. That needs the keys listed below.
 
+Before deploying a release with a migration, take a dump. Migration `003` (organization recovery format 2) is one-way: it deletes the old recovery shares, and custodians enroll again afterwards. Going back to an older release means restoring the dump taken before the upgrade.
+
 Copying the `postgres-data` volume is a cold backup only when Postgres is stopped. A copy of a running data directory can be torn. Prefer `pg_dump`.
 
 ## Service export
@@ -82,7 +84,7 @@ Keep all of these, in separate places:
 
 - Postgres dumps.
 - Each member's personal recovery key, stored when enrollment showed it.
-- Both organization shares, still sealed to the custodians, which the database dump already contains, plus a tested way for each custodian to open their identity.
+- The recovery custodians' ability to open their own key: each custodian's passphrase or personal recovery key. Their boxed shares are already in the database dump.
 - The Authentik configuration, which this repository does not back up.
 
 Losing the dump loses the ciphertext. Losing the keys loses the ability to read a dump you still have.

@@ -92,10 +92,9 @@ type OidcTransaction struct {
 }
 
 type Organization struct {
-	ID            uuid.UUID `json:"id"`
-	Name          string    `json:"name"`
-	RecoveryReady bool      `json:"recovery_ready"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Payment struct {
@@ -119,13 +118,50 @@ type PaymentMethod struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+type RecoveryChallenge struct {
+	ID             uuid.UUID          `json:"id"`
+	OrganizationID uuid.UUID          `json:"organization_id"`
+	VaultID        uuid.UUID          `json:"vault_id"`
+	Epoch          int32              `json:"epoch"`
+	CustodianID    uuid.UUID          `json:"custodian_id"`
+	Digest         []byte             `json:"digest"`
+	ExpiresAt      time.Time          `json:"expires_at"`
+	UsedAt         pgtype.Timestamptz `json:"used_at"`
+	CreatedAt      time.Time          `json:"created_at"`
+}
+
 type RecoveryCustodian struct {
-	OrganizationID  uuid.UUID `json:"organization_id"`
-	UserID          uuid.UUID `json:"user_id"`
-	ShareIndex      int16     `json:"share_index"`
-	ShareCiphertext []byte    `json:"share_ciphertext"`
-	Fingerprint     string    `json:"fingerprint"`
-	CreatedAt       time.Time `json:"created_at"`
+	OrganizationID  uuid.UUID          `json:"organization_id"`
+	Epoch           int32              `json:"epoch"`
+	ShareIndex      int16              `json:"share_index"`
+	UserID          uuid.UUID          `json:"user_id"`
+	Fingerprint     string             `json:"fingerprint"`
+	ShareNonce      []byte             `json:"share_nonce"`
+	ShareCiphertext []byte             `json:"share_ciphertext"`
+	ConfirmedAt     pgtype.Timestamptz `json:"confirmed_at"`
+}
+
+type RecoveryEpoch struct {
+	OrganizationID     uuid.UUID `json:"organization_id"`
+	Epoch              int32     `json:"epoch"`
+	PublicKey          []byte    `json:"public_key"`
+	Fingerprint        string    `json:"fingerprint"`
+	CreatedBy          uuid.UUID `json:"created_by"`
+	CreatorPublicKey   []byte    `json:"creator_public_key"`
+	CreatorFingerprint string    `json:"creator_fingerprint"`
+	Status             string    `json:"status"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+type RecoveryGrant struct {
+	ID             uuid.UUID          `json:"id"`
+	OrganizationID uuid.UUID          `json:"organization_id"`
+	VaultID        uuid.UUID          `json:"vault_id"`
+	Epoch          int32              `json:"epoch"`
+	CustodianID    uuid.UUID          `json:"custodian_id"`
+	ExpiresAt      time.Time          `json:"expires_at"`
+	UsedAt         pgtype.Timestamptz `json:"used_at"`
+	CreatedAt      time.Time          `json:"created_at"`
 }
 
 type RenewalAlert struct {
@@ -260,6 +296,6 @@ type VaultMember struct {
 type VaultRecoveryEnvelope struct {
 	VaultID    uuid.UUID `json:"vault_id"`
 	KeyVersion int32     `json:"key_version"`
-	Nonce      []byte    `json:"nonce"`
 	Ciphertext []byte    `json:"ciphertext"`
+	Epoch      int32     `json:"epoch"`
 }

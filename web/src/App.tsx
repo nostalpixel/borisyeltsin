@@ -219,6 +219,7 @@ export function App() {
         {view === "vault" && data && (
           <Suspense fallback={<p className="content modal-hint">Loading vault…</p>}>
             <VaultPage
+              isAdmin={user.role === "admin"}
               userId={user.id}
               recoveryReady={data.organization.recovery_ready}
               open={open}
