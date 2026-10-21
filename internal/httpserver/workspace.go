@@ -72,6 +72,7 @@ func serviceView(row db.Service) map[string]any {
 		"description": row.Description, "unclear": row.Unclear, "logo": row.Logo,
 		"logo_bg": row.LogoBg, "logo_fg": row.LogoFg, "owner_id": row.OwnerID,
 		"notes": row.Notes, "tags": row.Tags, "archived": row.ArchivedAt.Valid,
+		"created_at": row.CreatedAt,
 	}
 }
 

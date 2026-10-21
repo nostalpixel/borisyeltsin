@@ -17,6 +17,7 @@ type Props = {
 export function Workspace({ data, category, readOnly, passwords, canStore, onReload, onSavePassword, onImport }: Props) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
+  const [order, setOrder] = useState<SortOrder>(savedOrder);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<Service | null | "new">(null);
   const [notice, setNotice] = useState("");
@@ -47,6 +48,7 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
       .toLocaleLowerCase();
     return hay.includes(query.toLocaleLowerCase());
   });
+  const shown = sortServices(found, order);
 
   async function run(action: () => Promise<void>) {
     setError("");
@@ -124,6 +126,27 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
             <span>Search</span>
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="filter by service, host, login" />
           </label>
+          <label className="sort-control">
+            <span>Sort</span>
+            <select
+              value={order}
+              onChange={(event) => {
+                const next = event.target.value as SortOrder;
+                setOrder(next);
+                try {
+                  localStorage.setItem(sortKey, next);
+                } catch {
+                  // Private windows may refuse storage; the choice lasts this visit.
+                }
+              }}
+            >
+              {sortOrders.map(([id, label]) => (
+                <option key={id} value={id}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
           <div className="filters">
             {[
               ["all", "All"],
@@ -145,8 +168,8 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
           <span />
         </div>
         <div id="services">
-          {found.length === 0 && <div className="empty-state">No services found. Try another search or filter.</div>}
-          {found.map((service) => {
+          {shown.length === 0 && <div className="empty-state">No services found. Try another search or filter.</div>}
+          {shown.map((service) => {
             const accounts = byService.accounts.get(service.id) ?? [];
             const dueDays = nearestDue(accounts, byService.subs);
             const level = dueDays === null ? "" : dueDays <= 3 ? "danger" : "warning";
@@ -303,6 +326,43 @@ export function CategoryNav(props: {
 }
 
 // statLine is the one-line summary under the title. Numbers, not tiles.
+type SortOrder = "az" | "za" | "newest" | "oldest";
+
+const sortOrders: [SortOrder, string][] = [
+  ["az", "Name A–Z"],
+  ["za", "Name Z–A"],
+  ["newest", "Newest first"],
+  ["oldest", "Oldest first"],
+];
+
+const sortKey = "be.services.sort";
+
+function savedOrder(): SortOrder {
+  try {
+    const value = localStorage.getItem(sortKey);
+    if (sortOrders.some(([id]) => id === value)) return value as SortOrder;
+  } catch {
+    // Storage can be blocked; fall back to the default.
+  }
+  return "az";
+}
+
+// Names compare the way people read them: case and accents ignored, numbers
+// by value, so "Server 2" comes before "Server 10".
+const byName = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+
+export function sortServices(services: Service[], order: SortOrder): Service[] {
+  const sorted = [...services];
+  if (order === "az" || order === "za") {
+    const direction = order === "za" ? -1 : 1;
+    sorted.sort((a, b) => direction * byName.compare(a.name, b.name) || a.id.localeCompare(b.id));
+  } else {
+    const direction = order === "newest" ? -1 : 1;
+    sorted.sort((a, b) => direction * (Date.parse(a.created_at) - Date.parse(b.created_at)) || byName.compare(a.name, b.name));
+  }
+  return sorted;
+}
+
 function statLine(data: WorkspaceData): string {
   const parts = [`${data.summary.services} services`, `${data.summary.accounts} accounts`];
   for (const [currency, amount] of Object.entries(data.summary.monthly)) {

@@ -272,6 +272,24 @@ h2 {
 .search input::placeholder {
   color: var(--muted);
 }
+.sort-control {
+  display: grid;
+  gap: var(--s1);
+}
+.sort-control > span {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sort-control select {
+  min-height: 40px;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+}
 .filters {
   display: flex;
   flex-wrap: wrap;
@@ -712,7 +730,8 @@ dialog h2 {
   .field input,
   .field select,
   .field textarea,
-  .search input {
+  .search input,
+  .sort-control select {
     font-size: 16px;
     min-height: 44px;
   }
@@ -790,10 +809,10 @@ dialog h2 {
 .data-row.audit {
   grid-template-columns: 190px minmax(160px, 1fr) minmax(100px, 0.5fr);
 }
-/* Agent tokens share the split layout with a form, so the columns are narrower. */
-.data-head.tokens,
-.data-row.tokens {
-  grid-template-columns: minmax(140px, 1.4fr) minmax(70px, 0.6fr) minmax(110px, 1fr) auto;
+/* Tables next to a form in the split layout get narrower columns. */
+.split .data-head,
+.split .data-row {
+  grid-template-columns: minmax(140px, 1.4fr) minmax(70px, 0.6fr) minmax(110px, 1fr) 84px;
 }
 .data-head {
   border-bottom: 1px solid var(--line);
@@ -912,7 +931,7 @@ dialog.verify {
   }
   .data-row,
   .data-row.audit,
-  .data-row.tokens {
+  .split .data-row {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--s1);
   }
@@ -949,4 +968,8 @@ dialog.verify {
   font-size: 13px;
   overflow-wrap: anywhere;
   user-select: all;
+}
+.token-box.invite-key {
+  font-size: 20px;
+  letter-spacing: 0.02em;
 }

@@ -267,8 +267,15 @@ function Login({ error }: { error: string | null }) {
         <p className="intro">There is no public registration. Authentik checks the second factor.</p>
         {message && <div className="banner bad">{message}</div>}
         <label className="field">
-          <span>Invitation token</span>
-          <textarea value={token} onChange={(event) => setToken(event.target.value)} rows={3} placeholder="Paste the token if this is your first sign-in" />
+          <span>Invitation key</span>
+          <input
+            value={token}
+            onChange={(event) => setToken(event.target.value)}
+            placeholder="eggs-watermelon, if this is your first sign-in"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+          />
         </label>
         <button className="btn primary">Sign in</button>
       </form>
