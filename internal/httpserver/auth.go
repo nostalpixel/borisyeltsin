@@ -265,8 +265,8 @@ func (s *Server) stashInvite(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &body) {
 		return
 	}
-	body.Token = strings.TrimSpace(body.Token)
-	if len(body.Token) < 20 || len(body.Token) > 128 {
+	body.Token = token.NormalizeInvite(body.Token)
+	if len(body.Token) < 3 || len(body.Token) > 128 {
 		s.fail(w, http.StatusBadRequest, "invitation_invalid")
 		return
 	}
@@ -881,16 +881,26 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, "bad_invitation")
 		return
 	}
-	plain, hash, err := token.New()
-	if err != nil {
-		s.fail(w, http.StatusInternalServerError, "server")
-		return
+	var plain string
+	var err error
+	var row db.Invitation
+	// A word pair can repeat one stored earlier; draw again on that rare clash.
+	for attempt := 0; ; attempt++ {
+		var hash []byte
+		plain, hash, err = token.NewInvite()
+		if err != nil {
+			s.fail(w, http.StatusInternalServerError, "server")
+			return
+		}
+		row, err = s.Q.CreateInvitation(r.Context(), db.CreateInvitationParams{
+			OrganizationID: p.OrgID, TokenHash: hash, IntendedIssuer: body.Issuer,
+			IntendedSubject: body.Subject, IntendedEmail: body.Email, Role: body.Role,
+			ExpiresAt: s.now().Add(token.InviteTTL), CreatedBy: &p.UserID,
+		})
+		if !isUnique(err) || attempt == 4 {
+			break
+		}
 	}
-	row, err := s.Q.CreateInvitation(r.Context(), db.CreateInvitationParams{
-		OrganizationID: p.OrgID, TokenHash: hash, IntendedIssuer: body.Issuer,
-		IntendedSubject: body.Subject, IntendedEmail: body.Email, Role: body.Role,
-		ExpiresAt: s.now().Add(token.InviteTTL), CreatedBy: &p.UserID,
-	})
 	if err != nil {
 		s.sendError(w, err)
 		return
@@ -963,7 +973,7 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, cfg config.Config) (stri
 	if err := q.RevokeOpenInvitations(ctx, org.ID); err != nil {
 		return "", err
 	}
-	plain, hash, err := token.New()
+	plain, hash, err := token.NewInvite()
 	if err != nil {
 		return "", err
 	}

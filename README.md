@@ -77,7 +77,7 @@ Then create the invite from the running container:
 docker compose exec boriseltsyn boriseltsyn bootstrap-invite
 ```
 
-It prints `BOOTSTRAP_INVITE_TOKEN=` to that terminal only; the server log never contains it. The database stores only a SHA-256 of the token. The token lasts 24 hours and works once. Running the command again revokes the earlier token and prints a new one. Once the first person has signed in, the command refuses to run.
+It prints `BOOTSTRAP_INVITE_TOKEN=` (two words, such as `eggs-watermelon`) to that terminal only; the server log never contains it. The database stores only a SHA-256 of the key. The token lasts 24 hours and works once. Running the command again revokes the earlier token and prints a new one. Once the first person has signed in, the command refuses to run.
 
 Paste the token on the login page. The browser stores it in an HttpOnly cookie and sends the person to Authentik. After MFA, the browser generates an X25519 key, asks for a passphrase of at least 12 characters, and shows a personal recovery key once. The sole user may approve their own key. Every later key needs a different active admin.
 

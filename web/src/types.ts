@@ -18,6 +18,7 @@ export type Service = {
   logo_bg: string;
   logo_fg: string;
   notes: string;
+  created_at: string;
 };
 
 export type Account = {

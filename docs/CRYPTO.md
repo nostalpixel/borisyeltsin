@@ -12,7 +12,7 @@ The browser uses `libsodium-wrappers-sumo` 0.7.15. The non-sumo package `libsodi
 
 The Go server does not decrypt vault payloads. It checks sizes, KDF floors, membership, and fingerprints. Fingerprints are `sha256.Sum256` of the raw 32-byte X25519 public key, hex-encoded. The browser digest must match that byte string.
 
-Binary fields on the wire are standard base64 (`sodium.base64_variants.ORIGINAL`, Go `StdEncoding` with a raw-standard fallback). Invitation tokens are a separate encoding: base64 raw URL, and only the SHA-256 is stored.
+Binary fields on the wire are standard base64 (`sodium.base64_variants.ORIGINAL`, Go `StdEncoding` with a raw-standard fallback). Invitation keys are two lower-case words joined by a dash (`eggs-watermelon`); input is lower-cased and spaces become a dash before hashing, and only the SHA-256 is stored. Keys issued before 0.4 are base64 raw URL and are compared exactly.
 
 ## Constructions
 
