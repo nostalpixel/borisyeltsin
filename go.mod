@@ -1,6 +1,6 @@
 module github.com/nostalpixel/borisyeltsin
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/coreos/go-oidc/v3 v3.14.1
