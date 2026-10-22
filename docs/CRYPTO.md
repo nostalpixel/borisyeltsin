@@ -41,7 +41,23 @@ v1|<vault_id>|<item_id>|<key_version>
 
 `vault_id` and `item_id` are UUID strings. `key_version` is the decimal version used to encrypt that row. Changing any of the three makes `decrypt` fail.
 
-Item plaintext is JSON `{"v":1,"password":"..."}`. The server stores the nonce and ciphertext. It does not see this JSON.
+Item plaintext is JSON. Format 1 is `{"v":1,"password":"..."}`. Format 2, written since 0.4, adds the account's extra fields and documents:
+
+```json
+{"v":2,"password":"...","fields":[{"name":"Account ID","value":"..."}],
+ "files":[{"id":"<uuid>","name":"contract.pdf","type":"application/pdf","size":12345,"key":"<base64 32 bytes>","added":"<ISO time>"}]}
+```
+
+Readers accept both formats; every save writes format 2 with the whole record, so a password edit keeps the fields and documents. An item that fails to decrypt is never overwritten from the browser (`item_unreadable`). The server stores the nonce and ciphertext. It does not see this JSON.
+
+## Account documents
+
+Each attached document gets a fresh 32-byte key from `randombytes_buf`. The browser encrypts the file with XChaCha20-Poly1305 under that key, with additional data `file|v1|<vault_id>|<file_id>`, and uploads `nonce ‖ ciphertext` to `POST /api/v1/vaults/{vault}/files?id=<file_id>&account=<account_id>` as `application/octet-stream`. The key, name, type and size live only in the account's item (format 2 above), so the file name is encrypted too.
+
+- The vault key never encrypts file contents. Rotation re-encrypts the item, which carries the file keys under the new vault key; file ciphertext is not touched. A member removed before a rotation who kept a file key from earlier could still open that file's ciphertext from a later database copy, which is no more than they could already read.
+- The server learns only the ciphertext size, which account it belongs to, and who uploaded it when. It enforces 10 MiB per file, 20 files per account and 1 GiB per vault, the account's view and edit rights, vault membership with a held key, and a ready recovery for uploads. Deleting the account deletes its files.
+- The format check runs in the browser because the server cannot read the file: PDF, OpenDocument (`.odt`, `.ods`, `.odp`, `.odg`, checked by the ZIP's leading `mimetype` entry), PNG, JPEG, WebP, GIF, and UTF-8 text (`.txt`, `.md`, `.csv`, `.tsv`, `.json`, `.xml`, `.yaml`, `.toml`, `.ini`, `.conf`, `.log`, `.pem`, `.crt`, `.asc`). Microsoft and Apple formats (`.docx`, `.xlsx`, `.pptx`, `.rtf`, `.pages`, `.numbers`, `.key`, `.heic` and similar) are refused by name, and contents must match the extension. A modified client can skip this check; it only ever stores ciphertext.
+- Downloads are decrypted in the browser and saved as `application/octet-stream`; nothing is rendered in the app's origin.
 
 ## Envelopes
 
@@ -158,7 +174,7 @@ Migration `003` is one-way. It deletes format-1 custodian rows and recovery enve
 
 ## What the server stores
 
-Stored: public keys (identity and recovery), fingerprints, KDF parameters, salts, nonces, ciphertext, sealed envelopes, boxed custodian shares, recovery epochs and their confirmations, vault membership, SHA-256 hashes of recovery challenges, and recovery grants with their expiry.
+Stored: public keys (identity and recovery), fingerprints, encrypted account documents and their sizes, KDF parameters, salts, nonces, ciphertext, sealed envelopes, boxed custodian shares, recovery epochs and their confirmations, vault membership, SHA-256 hashes of recovery challenges, and recovery grants with their expiry.
 
 Not stored and not accepted in import bodies: passphrases, private keys, recovery keys, unwrapped vault keys, account passwords, or card numbers of 13–19 digits. Empty password fields are allowed on import because the browser deletes the password before posting. A non-empty `password`, `secret`, `passphrase`, `private_key`, `cvv`, `pan`, `recovery_key`, `vault_key`, or `token` is rejected.
 

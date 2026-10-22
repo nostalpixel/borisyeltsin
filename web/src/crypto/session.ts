@@ -1,4 +1,5 @@
-import { ApiError, api } from "../api";
+import { ApiError, api, getBytes, sendBytes } from "../api";
+import { DocumentRejected, MAX_DOCUMENT_BYTES, checkDocument, cleanName } from "../files";
 import type { PublicKey, VaultInfo } from "../types";
 import {
   KDF_MEMLIMIT,
@@ -16,10 +17,13 @@ import {
   openShare,
   openVaultKey,
   passphraseKek,
-  passwordRecord,
+  accountRecord,
+  decryptFile,
+  emptyRecord,
+  encryptFile,
   publicFromPrivate,
   randomBytes,
-  readPassword,
+  readRecord,
   recoveryKeypair,
   sealRecoveryEnvelope,
   sealVaultKey,
@@ -28,6 +32,8 @@ import {
   sodiumReady,
   splitKey,
   toB64,
+  type AccountRecord,
+  type FileRef,
   type SharePayload,
 } from "./vault";
 import sodium from "libsodium-wrappers-sumo";
@@ -482,6 +488,9 @@ export async function finishRecovery(viewerId: string, keys: HeldKeys, recovered
 
 export type VaultItems = {
   passwords: Record<string, string>;
+  // Full account records by item id. An item that fails to decrypt has no
+  // record here, and saving over it is refused so its fields and files survive.
+  records: Record<string, AccountRecord>;
   // Item versions as last read. Edits send them back so a stale edit is refused.
   versions: Record<string, number>;
 };
@@ -492,6 +501,7 @@ export async function loadPasswords(vault: VaultInfo, vaultKey: Uint8Array): Pro
   await sodiumReady();
   const listed = await api<{ items: ItemRow[] }>(`/api/v1/vaults/${vault.id}/items`);
   const out: Record<string, string> = {};
+  const records: Record<string, AccountRecord> = {};
   const versions: Record<string, number> = {};
   for (const item of listed.items) {
     versions[item.id] = item.version;
@@ -500,25 +510,36 @@ export async function loadPasswords(vault: VaultInfo, vaultKey: Uint8Array): Pro
         nonce: fromB64(item.nonce),
         ciphertext: fromB64(item.ciphertext),
       });
-      out[item.id] = readPassword(plain);
+      records[item.id] = readRecord(plain);
+      out[item.id] = records[item.id].password;
     } catch {
       out[item.id] = "";
     }
   }
-  return { passwords: out, versions };
+  return { passwords: out, records, versions };
 }
 
-export async function savePassword(
+// baseRecord is what a save starts from: the decrypted record, an empty one
+// for an account without an item yet, or a refusal when the item exists but
+// could not be read.
+export function baseRecord(items: VaultItems, itemId: string | null): AccountRecord {
+  if (!itemId) return emptyRecord;
+  const record = items.records[itemId];
+  if (!record) throw new Error("item_unreadable");
+  return record;
+}
+
+export async function saveRecord(
   vault: VaultInfo,
   vaultKey: Uint8Array,
   accountId: string,
   itemId: string | null,
-  password: string,
+  record: AccountRecord,
   version: number | undefined,
 ): Promise<{ id: string; version: number }> {
   await sodiumReady();
   const id = itemId || crypto.randomUUID();
-  const boxed = encryptItem(vault.id, id, vault.key_version, vaultKey, passwordRecord(password));
+  const boxed = encryptItem(vault.id, id, vault.key_version, vaultKey, accountRecord(record));
   const body = { nonce: toB64(boxed.nonce), ciphertext: toB64(boxed.ciphertext), expected_key_version: vault.key_version };
   if (itemId) {
     const saved = await api<{ version: number }>(`/api/v1/vaults/${vault.id}/items/${id}`, "PUT", { ...body, version: version ?? 0 });
@@ -527,6 +548,43 @@ export async function savePassword(
   const created = await api<{ version: number }>(`/api/v1/vaults/${vault.id}/items`, "POST", { id, ...body });
   await api(`/api/v1/accounts/${accountId}/vault-link`, "POST", { vault_id: vault.id, vault_item_id: id });
   return { id, version: created.version };
+}
+
+// uploadDocument checks the format, encrypts the file under a new key and
+// stores the ciphertext. The returned reference, with that key, belongs in
+// the account record; until it is saved there the upload is unreachable.
+export async function uploadDocument(vault: VaultInfo, accountId: string, file: File): Promise<FileRef> {
+  await sodiumReady();
+  if (file.size > MAX_DOCUMENT_BYTES) {
+    throw new DocumentRejected("Documents can be at most 10 MB.");
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const name = cleanName(file.name);
+  const type = checkDocument(name, bytes);
+  const id = crypto.randomUUID();
+  const key = randomBytes(32);
+  const sealed = encryptFile(vault.id, id, key, bytes);
+  await sendBytes(`/api/v1/vaults/${vault.id}/files?id=${id}&account=${accountId}`, sealed);
+  const ref = { id, name, type, size: bytes.length, key: toB64(key), added: new Date().toISOString() };
+  sodium.memzero(key);
+  return ref;
+}
+
+export async function downloadDocument(vault: VaultInfo, ref: FileRef): Promise<Uint8Array> {
+  await sodiumReady();
+  const sealed = await getBytes(`/api/v1/vaults/${vault.id}/files/${ref.id}`);
+  const key = fromB64(ref.key);
+  try {
+    return decryptFile(vault.id, ref.id, key, sealed);
+  } catch {
+    throw new Error("The document could not be decrypted. It may have been replaced on the server.");
+  } finally {
+    sodium.memzero(key);
+  }
+}
+
+export async function deleteDocument(vault: VaultInfo, id: string): Promise<void> {
+  await api(`/api/v1/vaults/${vault.id}/files/${id}`, "DELETE", {});
 }
 
 // rotateVault re-encrypts every item under a new key, seals it to every member

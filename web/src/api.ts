@@ -76,6 +76,11 @@ const messages: Record<string, string> = {
   vault_exists: "This organization already has a vault. Ask an owner to share it with you.",
   proposal_rejected: "Replacement key rejected.",
   owner_envelope_first: "The vault owner has to unlock the vault once before sharing it.",
+  bad_file: "The document could not be stored. Try again.",
+  file_too_large: "Documents can be at most 10 MB.",
+  too_many_files: "An account can hold at most 20 documents. Remove one first.",
+  storage_full: "The vault's document storage (1 GB) is full. Remove documents you no longer need.",
+  item_unreadable: "This account's vault entry could not be decrypted, so it was not overwritten. Lock and unlock the vault, then try again.",
 };
 
 export function explain(error: unknown): string {
@@ -86,6 +91,39 @@ export function explain(error: unknown): string {
     return messages[error.message] ?? error.message;
   }
   return "Request rejected.";
+}
+
+async function failure(response: Response): Promise<ApiError> {
+  let code = "server";
+  try {
+    code = ((await response.json()) as { error?: string }).error ?? code;
+  } catch {
+    // Not JSON; keep the generic code.
+  }
+  return new ApiError(response.status, code);
+}
+
+// sendBytes uploads an encrypted blob. The body is never JSON, so it carries
+// the same CSRF headers as api() by hand.
+export async function sendBytes<T>(path: string, body: Uint8Array): Promise<T> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "X-Requested-With": "fetch", "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream" },
+    credentials: "include",
+    body,
+  });
+  if (!response.ok) {
+    throw await failure(response);
+  }
+  return (await response.json()) as T;
+}
+
+export async function getBytes(path: string): Promise<Uint8Array> {
+  const response = await fetch(path, { headers: { "X-Requested-With": "fetch" }, credentials: "include" });
+  if (!response.ok) {
+    throw await failure(response);
+  }
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 export async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {

@@ -438,6 +438,10 @@ h2 {
   padding: var(--s4);
   background: var(--panel);
 }
+/* Grid children default to their content width; let the account form shrink to the phone. */
+.account > form {
+  grid-template-columns: minmax(0, 1fr);
+}
 .account + .account {
   border-top: 1px solid var(--line-soft);
 }
@@ -511,6 +515,64 @@ h2 {
 .field input:disabled,
 .field select:disabled {
   color: var(--muted);
+}
+/* Extra fields and documents live under the account's fixed fields. */
+.extras {
+  display: grid;
+  gap: var(--s2);
+  padding-top: var(--s3);
+  border-top: 1px dashed var(--line-soft);
+}
+.extras-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+.extras-head h4 {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+.extra-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  align-items: end;
+  gap: var(--s3);
+}
+.field textarea {
+  resize: vertical;
+  font: inherit;
+}
+.btn.disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+.documents {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.documents li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) 0;
+}
+.documents li + li {
+  border-top: 1px solid var(--line-soft);
+}
+.doc-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  text-align: left;
 }
 .password {
   display: flex;
@@ -724,8 +786,15 @@ dialog h2 {
   .service-body {
     padding: 0 var(--s3) var(--s3);
   }
-  .fields {
+  .fields,
+  .extra-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .documents li {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .documents li .service-sub {
+    grid-row: 2;
   }
   .field input,
   .field select,

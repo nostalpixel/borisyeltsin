@@ -2,10 +2,11 @@
 
 ## Release
 
-**Latest: [v0.3.0](https://github.com/nostalpixel/borisyeltsin/tree/v0.3.0)**, early access. Image: `ghcr.io/nostalpixel/borisyeltsin:0.3.0` (`linux/amd64`, `linux/arm64`).
+**Latest: [v0.4.0](https://github.com/nostalpixel/borisyeltsin/tree/v0.4.0)**, early access. Image: `ghcr.io/nostalpixel/borisyeltsin:0.4.0` (`linux/amd64`, `linux/arm64`).
 
 | Version | Changes | Upgrade notes |
 |---|---|---|
+| 0.4.0 | Accounts get **extra fields** (account ID, support PIN, contract number) and **documents** (contracts, invoices, keys), both encrypted with the password. Documents: PDF, OpenDocument, images or plain text, up to 10 MB; Microsoft and Apple formats are refused. Services list sorts by name or date added. Invitation keys are two words (`eggs-watermelon`). Saving an account without a cost or date no longer creates a 0.00 subscription due today. | Migration 005 adds a table. Backups grow with attached documents (up to 1 GB per vault). Open invitations from 0.3.0 keep working. |
 | 0.3.0 | AI agents: an MCP endpoint answers what renews when and what it costs, and adds subscriptions with a write token. New **Agents** page for personal tokens ([docs/MCP.md](docs/MCP.md), [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)). Amounts above one trillion are refused. | Migration 004 adds a table. No other steps. |
 | 0.2.1 | Auto-renewing subscriptions move to their next renewal date instead of showing overdue forever. | No migration. |
 | 0.2.0 | Organization recovery: two custodians and a recovery key can restore vault access ([docs/RECOVERY.md](docs/RECOVERY.md)). | Migration 003 is one-way. Take a `pg_dump` first. Recovery set up on 0.1.0 is removed: set it up again (new passwords are blocked until then). |
@@ -21,8 +22,8 @@ Repository: [github.com/nostalpixel/borisyeltsin](https://github.com/nostalpixel
 
 ## What it does
 
-- **Subscription ledger.** Services, accounts, subscriptions with billing cycles (monthly, quarterly, annual, custom), renewal dates and costs in any currency. Monthly spend per currency, due-soon and overdue markers, renewal alerts at 7, 3 and 1 days. Auto-renewing subscriptions move to their next renewal date on their own. CSV and Excel export, backup import.
-- **Shared password vault.** Passwords are encrypted in the browser (libsodium); the server stores ciphertext only. Sharing goes only to teammates whose key fingerprint you verified. Vault key rotation, passphrase change, and edit conflict detection.
+- **Subscription ledger.** Services, accounts, subscriptions with billing cycles (monthly, quarterly, annual, custom), renewal dates and costs in any currency. Sort by name or date added. Monthly spend per currency, due-soon and overdue markers, renewal alerts at 7, 3 and 1 days. Auto-renewing subscriptions move to their next renewal date on their own. CSV and Excel export, backup import.
+- **Shared password vault.** Passwords, extra account fields and attached documents (PDF, OpenDocument, images, plain text) are encrypted in the browser (libsodium); the server stores ciphertext only. Sharing goes only to teammates whose key fingerprint you verified. Vault key rotation, passphrase change, and edit conflict detection.
 - **Recovery.** A personal recovery key per person, plus organization recovery: two custodians together can restore vault access when every key holder is gone ([docs/RECOVERY.md](docs/RECOVERY.md)).
 - **Team.** Sign-in through Authentik with MFA, invitations bound to one Authentik account, roles (admin, manager, member, read-only), key approval, revocation, audit log.
 - **AI agents.** An MCP endpoint lets Claude and other agents ask "what is our monthly bill?" or "what renews next week?", and add a subscription when told to. Agents never see the vault ([docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)).
@@ -43,7 +44,7 @@ The database URL inside Compose uses `sslmode=disable` on the Docker network. Pu
 
 ### Release images
 
-Tagged releases are published as `ghcr.io/nostalpixel/borisyeltsin` for `linux/amd64` and `linux/arm64`. Set `BORISELTSYN_VERSION` to a release version (for example `0.3.0`) and pull instead of building:
+Tagged releases are published as `ghcr.io/nostalpixel/borisyeltsin` for `linux/amd64` and `linux/arm64`. Set `BORISELTSYN_VERSION` to a release version (for example `0.4.0`) and pull instead of building:
 
 ```bash
 docker compose pull boriseltsyn
