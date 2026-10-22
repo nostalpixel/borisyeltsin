@@ -130,7 +130,7 @@ export function AgentsPage({ isAdmin, readOnly }: { isAdmin: boolean; readOnly: 
             </label>
           )}
           <div className="data-table">
-            <div className="data-head tokens" aria-hidden="true">
+            <div className="data-head" aria-hidden="true">
               <span>Token</span>
               <span>Access</span>
               <span>State</span>
@@ -140,7 +140,7 @@ export function AgentsPage({ isAdmin, readOnly }: { isAdmin: boolean; readOnly: 
             {tokens.map((token) => {
               const current = state(token);
               return (
-                <div key={token.id} className="data-row tokens">
+                <div key={token.id} className="data-row">
                   <span>
                     <span className="service-name">{token.name}</span>
                     <span className="service-sub">

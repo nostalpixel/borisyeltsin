@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -486,4 +488,63 @@ func b64(n int) string {
 	raw := make([]byte, n)
 	_, _ = rand.Read(raw)
 	return base64.StdEncoding.EncodeToString(raw)
+}
+
+func TestWordPairInvitation(t *testing.T) {
+	srv, q := newServer(t)
+	h := srv.Handler()
+	org, err := q.CreateOrganization(context.Background(), "Words")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := srv.addUser(t, q, org.ID, "admin", "active")
+	rec := call(h, http.MethodPost, "/api/v1/invitations", map[string]string{
+		"issuer": "https://idp.example", "subject": "word-subject", "email": "w@example.com",
+	}, &admin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %d %s", rec.Code, rec.Body)
+	}
+	var created struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[a-z]+-[a-z]+$`).MatchString(created.Token) {
+		t.Fatalf("invitation %q is not two words", created.Token)
+	}
+	stash := func(typed string) string {
+		rec := call(h, http.MethodPost, "/api/v1/auth/invite", map[string]string{"token": typed}, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("stash %q: %d", typed, rec.Code)
+		}
+		for _, c := range rec.Result().Cookies() {
+			if c.Name == "be_invite" {
+				return c.Value
+			}
+		}
+		t.Fatal("no invite cookie")
+		return ""
+	}
+	// Typed with capitals and a space, as people read it out.
+	typed := " " + strings.ToUpper(strings.Replace(created.Token, "-", " ", 1)) + "\n"
+	stashed := stash(typed)
+	if stashed != created.Token {
+		t.Fatalf("stashed %q, want %q", stashed, created.Token)
+	}
+	if _, code := srv.finishLogin(context.Background(), identityClaims{
+		Issuer: "https://idp.example", Subject: "word-subject", Email: "w@example.com", AMR: []string{"mfa"},
+	}, token.Hash(stashed)); code != "" {
+		t.Fatalf("login with word pair: %s", code)
+	}
+	legacy, _, err := token.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stash(legacy); got != legacy {
+		t.Fatal("legacy invitation was rewritten")
+	}
+	if rec := call(h, http.MethodPost, "/api/v1/auth/invite", map[string]string{"token": "a"}, nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("one letter: %d", rec.Code)
+	}
 }

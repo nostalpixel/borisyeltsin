@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, explain } from "./api";
 import { pinKey, pinState } from "./crypto/pins";
 import type { PublicKey } from "./types";
-import { Fingerprint, PinBadge, VerifyKeyDialog } from "./verify";
+import { PinBadge, VerifyKeyDialog } from "./verify";
 import { StatusLine } from "./workspace";
 
 type UserRow = { id: string; email: string; display_name: string; role: string; status: string };
@@ -158,7 +158,7 @@ export function TeamPage({ selfId }: { selfId: string }) {
               run(async () => {
                 const created = await api<{ token: string }>("/api/v1/invitations", "POST", body);
                 setToken(created.token);
-              }, "invitation created; the token is shown once")
+              }, "invitation created; the key is shown once")
             }
             onRevoke={(id) => run(() => api(`/api/v1/invitations/${id}/revoke`, "POST", {}), "invitation revoked")}
             onDismissToken={() => setToken("")}
@@ -307,8 +307,11 @@ function InvitationsTab({
         <p className="prose">The invitation works once, for 24 hours, and only for this exact Authentik account.</p>
         {token && (
           <div className="stack">
-            <Fingerprint value={token} label="Invitation token (shown once)" />
-            <p className="prose">Hand it to the person directly. They paste it on the sign-in page.</p>
+            <figure className="fingerprint">
+              <figcaption>Invitation key (shown once)</figcaption>
+              <code className="token-box invite-key">{token}</code>
+            </figure>
+            <p className="prose">Hand it to the person directly, or read it out. They type it on the sign-in page.</p>
             <button type="button" className="btn" onClick={onDismissToken}>
               I handed it over
             </button>
