@@ -651,3 +651,23 @@ WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND t.expires_at > now() AND u.
 -- name: TouchAPIToken :exec
 UPDATE api_tokens SET last_used_at = now()
 WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute');
+
+-- name: InsertVaultFile :one
+INSERT INTO vault_files (id, vault_id, account_id, size, content, created_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, size, created_at;
+
+-- name: CountAccountFiles :one
+SELECT count(*) FROM vault_files WHERE account_id = $1;
+
+-- name: VaultFileBytes :one
+SELECT coalesce(sum(size), 0)::bigint FROM vault_files WHERE vault_id = $1;
+
+-- name: GetVaultFileMeta :one
+SELECT id, vault_id, account_id, size FROM vault_files WHERE id = $1 AND vault_id = $2;
+
+-- name: GetVaultFileContent :one
+SELECT content FROM vault_files WHERE id = $1 AND vault_id = $2;
+
+-- name: DeleteVaultFile :execrows
+DELETE FROM vault_files WHERE id = $1 AND vault_id = $2;

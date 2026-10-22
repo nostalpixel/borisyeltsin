@@ -4,6 +4,7 @@ import { secretKey, splitBackup } from "./import";
 import { AgentsPage } from "./agents";
 import { TeamPage } from "./team";
 import type { Account, SessionUser, WorkspaceData } from "./types";
+import type { AccountRecord, FileRef } from "./crypto/vault";
 import type { OpenVault } from "./vault";
 import { Fingerprint } from "./verify";
 import { CategoryNav, Workspace } from "./workspace";
@@ -66,6 +67,8 @@ export function App() {
     if (!open || secrets.length === 0) return;
     const used = new Set<string>();
     const versions = { ...open.versions };
+    const records = { ...open.records };
+    const { baseRecord, saveRecord } = await import("./crypto/session");
     for (const hit of secrets) {
       const service = fresh.services.find((item) => item.name === hit.service);
       const account = fresh.accounts.find((item) => {
@@ -76,38 +79,36 @@ export function App() {
         throw new Error(`Could not link the password for account "${hit.label}". The metadata is already imported.`);
       }
       used.add(account.id);
-      const { savePassword: storePassword } = await import("./crypto/session");
       const itemVersion = account.vault_item_id ? versions[account.vault_item_id] : undefined;
-      const saved = await storePassword(open.vault, open.vaultKey, account.id, account.vault_item_id, hit.password, itemVersion);
+      const record = { ...baseRecord({ ...open, records }, account.vault_item_id), password: hit.password };
+      const saved = await saveRecord(open.vault, open.vaultKey, account.id, account.vault_item_id, record, itemVersion);
       versions[saved.id] = saved.version;
+      records[saved.id] = record;
       account.vault_item_id = saved.id;
       account.vault_id = open.vault.id;
     }
     const passwords = { ...open.passwords };
-    for (const account of fresh.accounts) {
-      const hit = secrets.find((item) => {
-        const service = fresh.services.find((row) => row.id === account.service_id);
-        return service && secretKey({ service: service.name, label: account.label, login: account.login_hint }) === secretKey(item);
-      });
-      if (hit && account.vault_item_id) passwords[account.vault_item_id] = hit.password;
-    }
-    setOpen({ ...open, passwords, versions });
+    for (const [id, record] of Object.entries(records)) passwords[id] = record.password;
+    setOpen({ ...open, passwords, records, versions });
     setData(fresh);
   }
 
-  async function saveAccountPassword(account: Account, password: string) {
+  // saveAccountRecord writes the account's whole vault entry: the change on
+  // top of the latest decrypted record, so a password edit keeps the fields
+  // and documents and the other way round.
+  async function saveAccountRecord(account: Account, change: Partial<AccountRecord>) {
     if (!open || !data?.organization.recovery_ready) {
       throw new Error("recovery_not_ready");
     }
-    const { savePassword: storePassword } = await import("./crypto/session");
+    const { baseRecord, saveRecord, loadPasswords } = await import("./crypto/session");
+    const record = { ...baseRecord(open, account.vault_item_id), ...change };
     const itemVersion = account.vault_item_id ? open.versions[account.vault_item_id] : undefined;
     let saved: { id: string; version: number };
     try {
-      saved = await storePassword(open.vault, open.vaultKey, account.id, account.vault_item_id, password, itemVersion);
+      saved = await saveRecord(open.vault, open.vaultKey, account.id, account.vault_item_id, record, itemVersion);
     } catch (err) {
       if (err instanceof ApiError && err.code === "item_conflict") {
-        // Load what the other person saved; the field keeps this person's text.
-        const { loadPasswords } = await import("./crypto/session");
+        // Load what the other person saved; the form keeps this person's text.
         const latest = await loadPasswords(open.vault, open.vaultKey);
         setOpen({ ...open, ...latest });
         throw new ApiError(409, "item_conflict_reloaded");
@@ -116,9 +117,53 @@ export function App() {
     }
     setOpen({
       ...open,
-      passwords: { ...open.passwords, [saved.id]: password },
+      passwords: { ...open.passwords, [saved.id]: record.password },
+      records: { ...open.records, [saved.id]: record },
       versions: { ...open.versions, [saved.id]: saved.version },
     });
+    return saved.id;
+  }
+
+  async function attachDocument(account: Account, file: File) {
+    if (!open || !data?.organization.recovery_ready) {
+      throw new Error("recovery_not_ready");
+    }
+    const { baseRecord, uploadDocument, deleteDocument } = await import("./crypto/session");
+    const current = baseRecord(open, account.vault_item_id);
+    const ref = await uploadDocument(open.vault, account.id, file);
+    try {
+      await saveAccountRecord(account, { files: [...current.files, ref] });
+    } catch (err) {
+      // The record never pointed at the upload; drop it rather than keep an orphan.
+      await deleteDocument(open.vault, ref.id).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  async function removeDocument(account: Account, ref: FileRef) {
+    if (!open) throw new Error("vault_locked");
+    const { baseRecord, deleteDocument } = await import("./crypto/session");
+    const current = baseRecord(open, account.vault_item_id);
+    await saveAccountRecord(account, { files: current.files.filter((item) => item.id !== ref.id) });
+    // The record no longer names it, so a failed delete leaves only ciphertext
+    // nobody holds a key for; deleting the account removes it for good.
+    await deleteDocument(open.vault, ref.id).catch(() => undefined);
+  }
+
+  async function openDocument(ref: FileRef) {
+    if (!open) throw new Error("vault_locked");
+    const { downloadDocument } = await import("./crypto/session");
+    const bytes = await downloadDocument(open.vault, ref);
+    // Always a download, never rendered in this origin.
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = ref.name;
+    link.rel = "noopener";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
   }
 
   if (!ready) {
@@ -213,12 +258,16 @@ export function App() {
             data={data}
             category={category}
             readOnly={user.role === "readonly"}
-            passwords={open?.passwords ?? {}}
+            records={open?.records ?? {}}
+            unlocked={Boolean(open)}
             canStore={Boolean(open && data.organization.recovery_ready)}
             onReload={async () => {
               await reloadWorkspace();
             }}
-            onSavePassword={saveAccountPassword}
+            onSaveRecord={saveAccountRecord}
+            onAttach={attachDocument}
+            onRemoveDocument={removeDocument}
+            onOpenDocument={openDocument}
             onImport={importFile}
           />
         )}

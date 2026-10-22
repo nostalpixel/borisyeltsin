@@ -276,6 +276,16 @@ type Vault struct {
 	Initialized      bool               `json:"initialized"`
 }
 
+type VaultFile struct {
+	ID        uuid.UUID `json:"id"`
+	VaultID   uuid.UUID `json:"vault_id"`
+	AccountID uuid.UUID `json:"account_id"`
+	Size      int64     `json:"size"`
+	Content   []byte    `json:"content"`
+	CreatedBy uuid.UUID `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type VaultItem struct {
 	ID         uuid.UUID          `json:"id"`
 	VaultID    uuid.UUID          `json:"vault_id"`
