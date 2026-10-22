@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -454,7 +455,9 @@ func cleanAccount(body accountBody) (accountBody, error) {
 }
 
 func (s *Server) billing(ctx context.Context, p Principal, body accountBody) (db.CreateSubscriptionParams, bool, error) {
-	if body.BillingCycle == "" && body.Cost == "" && body.RenewalDate == "" {
+	// The account form always sends a cycle, so cost and date decide: with
+	// neither there is nothing to bill and no subscription is made or changed.
+	if strings.TrimSpace(body.Cost) == "" && strings.TrimSpace(body.RenewalDate) == "" {
 		return db.CreateSubscriptionParams{}, false, nil
 	}
 	if body.BillingCycle == "" {
@@ -787,11 +790,14 @@ func (s *Server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &body) {
 		return
 	}
-	params, _, err := s.billing(r.Context(), p, accountBody{
+	params, ok, err := s.billing(r.Context(), p, accountBody{
 		BillingCycle: body.BillingCycle, RenewalDate: body.RenewalDate, Cost: body.Cost,
 		Currency: body.Currency, AutoRenew: body.AutoRenew, CustomIntervalDays: body.CustomIntervalDays,
 		PaymentMethodID: body.PaymentMethodID,
 	})
+	if err == nil && !ok {
+		err = errStatus(http.StatusBadRequest, "bad_subscription")
+	}
 	if err != nil {
 		s.sendError(w, err)
 		return

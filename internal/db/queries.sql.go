@@ -232,6 +232,17 @@ func (q *Queries) ConsumeOIDCTransaction(ctx context.Context, stateHash []byte) 
 	return i, err
 }
 
+const countAccountFiles = `-- name: CountAccountFiles :one
+SELECT count(*) FROM vault_files WHERE account_id = $1
+`
+
+func (q *Queries) CountAccountFiles(ctx context.Context, accountID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countAccountFiles, accountID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countAllUsers = `-- name: CountAllUsers :one
 SELECT count(*)::bigint FROM users
 `
@@ -848,6 +859,23 @@ func (q *Queries) DeleteStaleEnvelopesForUser(ctx context.Context, arg DeleteSta
 	return err
 }
 
+const deleteVaultFile = `-- name: DeleteVaultFile :execrows
+DELETE FROM vault_files WHERE id = $1 AND vault_id = $2
+`
+
+type DeleteVaultFileParams struct {
+	ID      uuid.UUID `json:"id"`
+	VaultID uuid.UUID `json:"vault_id"`
+}
+
+func (q *Queries) DeleteVaultFile(ctx context.Context, arg DeleteVaultFileParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteVaultFile, arg.ID, arg.VaultID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteVaultItems = `-- name: DeleteVaultItems :exec
 DELETE FROM vault_items WHERE vault_id = $1
 `
@@ -1410,6 +1438,50 @@ func (q *Queries) GetVault(ctx context.Context, arg GetVaultParams) (Vault, erro
 	return i, err
 }
 
+const getVaultFileContent = `-- name: GetVaultFileContent :one
+SELECT content FROM vault_files WHERE id = $1 AND vault_id = $2
+`
+
+type GetVaultFileContentParams struct {
+	ID      uuid.UUID `json:"id"`
+	VaultID uuid.UUID `json:"vault_id"`
+}
+
+func (q *Queries) GetVaultFileContent(ctx context.Context, arg GetVaultFileContentParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getVaultFileContent, arg.ID, arg.VaultID)
+	var content []byte
+	err := row.Scan(&content)
+	return content, err
+}
+
+const getVaultFileMeta = `-- name: GetVaultFileMeta :one
+SELECT id, vault_id, account_id, size FROM vault_files WHERE id = $1 AND vault_id = $2
+`
+
+type GetVaultFileMetaParams struct {
+	ID      uuid.UUID `json:"id"`
+	VaultID uuid.UUID `json:"vault_id"`
+}
+
+type GetVaultFileMetaRow struct {
+	ID        uuid.UUID `json:"id"`
+	VaultID   uuid.UUID `json:"vault_id"`
+	AccountID uuid.UUID `json:"account_id"`
+	Size      int64     `json:"size"`
+}
+
+func (q *Queries) GetVaultFileMeta(ctx context.Context, arg GetVaultFileMetaParams) (GetVaultFileMetaRow, error) {
+	row := q.db.QueryRow(ctx, getVaultFileMeta, arg.ID, arg.VaultID)
+	var i GetVaultFileMetaRow
+	err := row.Scan(
+		&i.ID,
+		&i.VaultID,
+		&i.AccountID,
+		&i.Size,
+	)
+	return i, err
+}
+
 const getVaultItem = `-- name: GetVaultItem :one
 SELECT id, vault_id, key_version, nonce, ciphertext, created_by, updated_by, created_at, updated_at, deleted_at, version FROM vault_items WHERE id = $1 AND vault_id = $2 AND deleted_at IS NULL
 `
@@ -1839,6 +1911,41 @@ func (q *Queries) InsertRenewalAlert(ctx context.Context, arg InsertRenewalAlert
 		arg.DueOn,
 	)
 	return err
+}
+
+const insertVaultFile = `-- name: InsertVaultFile :one
+INSERT INTO vault_files (id, vault_id, account_id, size, content, created_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, size, created_at
+`
+
+type InsertVaultFileParams struct {
+	ID        uuid.UUID `json:"id"`
+	VaultID   uuid.UUID `json:"vault_id"`
+	AccountID uuid.UUID `json:"account_id"`
+	Size      int64     `json:"size"`
+	Content   []byte    `json:"content"`
+	CreatedBy uuid.UUID `json:"created_by"`
+}
+
+type InsertVaultFileRow struct {
+	ID        uuid.UUID `json:"id"`
+	Size      int64     `json:"size"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) InsertVaultFile(ctx context.Context, arg InsertVaultFileParams) (InsertVaultFileRow, error) {
+	row := q.db.QueryRow(ctx, insertVaultFile,
+		arg.ID,
+		arg.VaultID,
+		arg.AccountID,
+		arg.Size,
+		arg.Content,
+		arg.CreatedBy,
+	)
+	var i InsertVaultFileRow
+	err := row.Scan(&i.ID, &i.Size, &i.CreatedAt)
+	return i, err
 }
 
 const insertVaultItem = `-- name: InsertVaultItem :one
@@ -3719,4 +3826,15 @@ func (q *Queries) UseRecoveryGrant(ctx context.Context, id uuid.UUID) (int64, er
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const vaultFileBytes = `-- name: VaultFileBytes :one
+SELECT coalesce(sum(size), 0)::bigint FROM vault_files WHERE vault_id = $1
+`
+
+func (q *Queries) VaultFileBytes(ctx context.Context, vaultID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, vaultFileBytes, vaultID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }

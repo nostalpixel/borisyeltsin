@@ -4,7 +4,7 @@ This is the boundary of the vault, not a claim that the whole application is zer
 
 ## Assets
 
-- Account passwords and other vault payloads.
+- Account passwords, extra fields, attached documents and other vault payloads.
 - Identity private keys and the passphrase that wraps them.
 - Vault keys and the organization recovery key.
 - Personal recovery keys and custodian shares.
@@ -15,7 +15,7 @@ This is the boundary of the vault, not a claim that the whole application is zer
 
 | Threat | What the code does |
 |---|---|
-| Stolen PostgreSQL backup | Vault payloads, private keys, and recovery shares are ciphertext. Session cookies are stored as SHA-256 hashes, so a dump does not hand out live sessions. The backup still contains subscription metadata and public keys. |
+| Stolen PostgreSQL backup | Vault payloads (including account documents and their file names), private keys, and recovery shares are ciphertext. Session cookies are stored as SHA-256 hashes, so a dump does not hand out live sessions. The backup still contains subscription metadata and public keys. |
 | Compromised API process | The process has no vault key and no passphrase. It can serve malicious JavaScript. See the boundary below. |
 | Malicious application admin | The admin role edits service metadata. It does not mint envelopes and cannot add itself to a vault. Adding members, sharing the key, and rotating require a vault owner who holds an envelope for the current key. Vault keys move only through client-side seals to approved public keys. |
 | Stolen Authentik password | Login requires an `amr` value in the allow-list (`mfa`, `otp`, `totp`, `webauthn` by default). A session without that claim is rejected on every request. The vault passphrase is separate. |
@@ -31,6 +31,7 @@ This is the boundary of the vault, not a claim that the whole application is zer
 | Recovery key substitution or rollback | Shares are authenticated boxes from the setting-up admin's verified key and carry the recovery public key; custodians check it before confirming. Browsers pin the recovery key with its epoch and refuse an older epoch or a changed fingerprint. |
 | Recovery by one person | The two custodians must be different users with different keys. Recovery needs both shares in one browser and a server challenge opened with the recombined key; challenges are single-use, expire in 5 minutes, and are limited to 5 per custodian per hour. |
 | Departed custodian | Revoking a custodian, replacing a custodian's key, or revoking the admin who set up the recovery key degrades recovery: it is refused, new passwords are blocked, and the vault needs rotation until a new recovery key is set up. A used recovery key is spent and never reused. |
+| Malicious document | Documents are checked in the browser before upload (open formats and PDF only, contents must match the extension) and are only ever downloaded, never rendered in the app's origin. A PDF or ODF file can still carry an exploit for the reader that opens it on the person's machine; the app does not scan files, because it cannot read them. |
 | Stolen agent token | Agent tokens (`docs/MCP.md`) reach only `/mcp`, which reads the ledger and, for write tokens, adds subscriptions. They never reach the vault, keys, members or recovery. 32 random bytes, SHA-256 at rest, at most 90 days, revocable, revoked with their owner, and limited to what the owner can see and edit. A token skips Authentik MFA by design, so the risk is ledger disclosure and unwanted subscription rows until it is revoked. |
 
 ## Boundaries

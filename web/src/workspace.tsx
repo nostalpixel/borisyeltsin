@@ -1,20 +1,42 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, explain } from "./api";
 import { dueLabel } from "./due";
+import type { AccountRecord, CustomField, FileRef } from "./crypto/vault";
+import { ACCEPT_ATTRIBUTE, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, checkFields, extensionOf, formatSize } from "./files";
 import { categories, currencies, cycles, type Account, type Service, type Subscription, type WorkspaceData } from "./types";
 
 type Props = {
   data: WorkspaceData;
   category: string;
   readOnly: boolean;
-  passwords: Record<string, string>;
+  records: Record<string, AccountRecord>;
+  unlocked: boolean;
   canStore: boolean;
   onReload: () => Promise<void>;
-  onSavePassword: (account: Account, password: string) => Promise<void>;
+  onSaveRecord: (account: Account, change: Partial<AccountRecord>) => Promise<unknown>;
+  onAttach: (account: Account, file: File) => Promise<void>;
+  onRemoveDocument: (account: Account, ref: FileRef) => Promise<void>;
+  onOpenDocument: (ref: FileRef) => Promise<void>;
   onImport: (file: File) => Promise<void>;
 };
 
-export function Workspace({ data, category, readOnly, passwords, canStore, onReload, onSavePassword, onImport }: Props) {
+const noRecord: AccountRecord = { password: "", fields: [], files: [] };
+
+export function Workspace({
+  data,
+  category,
+  readOnly,
+  records,
+  unlocked,
+  canStore,
+  onReload,
+  onSaveRecord,
+  onAttach,
+  onRemoveDocument,
+  onOpenDocument,
+  onImport,
+}: Props) {
+  const recordOf = (account: Account): AccountRecord | undefined => (account.vault_item_id ? records[account.vault_item_id] : unlocked ? noRecord : undefined);
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState<SortOrder>(savedOrder);
@@ -43,7 +65,20 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
     const unclear = service.unclear || !service.url;
     if (filter === "unclear" && !unclear) return false;
     if (filter === "due" && !accounts.some((account) => dueOf(byService.subs.get(account.id)).level)) return false;
-    const hay = [service.name, service.url, service.description, ...accounts.flatMap((account) => [account.label, account.login_hint, account.notes, account.card_label])]
+    const hay = [
+      service.name,
+      service.url,
+      service.description,
+      ...accounts.flatMap((account) => [
+        account.label,
+        account.login_hint,
+        account.notes,
+        account.card_label,
+        // Decrypted extra fields and document names are searchable while the vault is open.
+        ...(recordOf(account)?.fields.flatMap((field) => [field.name, field.value]) ?? []),
+        ...(recordOf(account)?.files.map((file) => file.name) ?? []),
+      ]),
+    ]
       .join(" ")
       .toLocaleLowerCase();
     return hay.includes(query.toLocaleLowerCase());
@@ -239,17 +274,32 @@ export function Workspace({ data, category, readOnly, passwords, canStore, onRel
                           index={index}
                           account={account}
                           sub={byService.subs.get(account.id)}
-                          password={account.vault_item_id ? passwords[account.vault_item_id] ?? "" : ""}
+                          record={recordOf(account)}
                           readOnly={readOnly}
                           canStore={canStore}
-                          onSave={async (body, password) => {
+                          onSave={async (body, change) => {
                             await api(`/api/v1/accounts/${account.id}`, "PATCH", body);
-                            if (password !== (account.vault_item_id ? passwords[account.vault_item_id] ?? "" : "")) {
-                              await onSavePassword(account, password);
+                            const before = recordOf(account) ?? noRecord;
+                            const changed =
+                              (change.password !== undefined && change.password !== before.password) ||
+                              (change.fields !== undefined && JSON.stringify(change.fields) !== JSON.stringify(before.fields));
+                            if (changed) {
+                              await onSaveRecord(account, change);
                             }
                             await onReload();
                             setNotice("Account saved.");
                           }}
+                          onAttach={async (file) => {
+                            await onAttach(account, file);
+                            await onReload();
+                            setNotice(`${file.name} encrypted and attached.`);
+                          }}
+                          onRemoveDocument={async (ref) => {
+                            await onRemoveDocument(account, ref);
+                            await onReload();
+                            setNotice(`${ref.name} removed.`);
+                          }}
+                          onOpenDocument={onOpenDocument}
                           onDelete={() => run(() => api(`/api/v1/accounts/${account.id}`, "DELETE", {}))}
                         />
                       ))}
@@ -430,24 +480,51 @@ function AccountEditor({
   account,
   sub,
   index,
-  password,
+  record,
   readOnly,
   canStore,
   onSave,
   onDelete,
+  onAttach,
+  onRemoveDocument,
+  onOpenDocument,
 }: {
   account: Account;
   sub?: Subscription;
   index: number;
-  password: string;
+  // The decrypted vault entry; undefined while the vault is locked.
+  record?: AccountRecord;
   readOnly: boolean;
   canStore: boolean;
-  onSave: (body: Record<string, unknown>, password: string) => Promise<void>;
+  onSave: (body: Record<string, unknown>, change: Partial<AccountRecord>) => Promise<void>;
   onDelete: () => void;
+  onAttach: (file: File) => Promise<void>;
+  onRemoveDocument: (ref: FileRef) => Promise<void>;
+  onOpenDocument: (ref: FileRef) => Promise<void>;
 }) {
   const [show, setShow] = useState(false);
   const [error, setError] = useState("");
+  const [fields, setFields] = useState<CustomField[]>(record?.fields ?? []);
+  const [busy, setBusy] = useState("");
+  const password = record?.password ?? "";
+  const writable = !readOnly && canStore && record !== undefined;
   const due = dueOf(sub);
+
+  function setField(at: number, change: Partial<CustomField>) {
+    setFields(fields.map((field, i) => (i === at ? { ...field, ...change } : field)));
+  }
+
+  async function documentAction(label: string, action: () => Promise<void>) {
+    setError("");
+    setBusy(label);
+    try {
+      await action();
+    } catch (err) {
+      setError(explain(err));
+    } finally {
+      setBusy("");
+    }
+  }
   return (
     <article className={`account ${due.level ? `due-${due.level}` : ""}`}>
       <form
@@ -458,6 +535,18 @@ function AccountEditor({
           const cycle = String(form.get("billing_cycle") ?? "monthly");
           const custom = Number(form.get("custom_interval_days") ?? 0);
           setError("");
+          const change: Partial<AccountRecord> = {};
+          if (writable) {
+            try {
+              change.fields = checkFields(fields);
+            } catch (err) {
+              setError(explain(err));
+              return;
+            }
+            change.password = String(form.get("password") ?? "");
+          } else if (canStore) {
+            change.password = String(form.get("password") ?? "");
+          }
           onSave(
             {
               label: String(form.get("label") ?? ""),
@@ -470,8 +559,13 @@ function AccountEditor({
               currency: String(form.get("currency") ?? "USD"),
               custom_interval_days: cycle === "custom" ? custom : undefined,
             },
-            String(form.get("password") ?? ""),
-          ).catch((err) => setError(explain(err)));
+            change,
+          ).then(
+            () => {
+              if (change.fields) setFields(change.fields);
+            },
+            (err) => setError(explain(err)),
+          );
         }}
       >
         <div className="account-top">
@@ -538,6 +632,98 @@ function AccountEditor({
             <input name="notes" defaultValue={account.notes} placeholder="Plan, owner, comment" disabled={readOnly} />
           </label>
         </div>
+        <section className="extras" aria-label={`Extra fields for account ${index + 1}`}>
+          <div className="extras-head">
+            <h4>Extra fields</h4>
+            {writable && fields.length < MAX_FIELDS && (
+              <button type="button" className="btn subtle" onClick={() => setFields([...fields, { name: "", value: "" }])}>
+                ＋ Add field
+              </button>
+            )}
+          </div>
+          {record === undefined ? (
+            <p className="modal-hint">Unlock the vault to see extra fields and documents. They are encrypted together with the password.</p>
+          ) : fields.length === 0 ? (
+            <p className="modal-hint">None yet. Use them for an account ID, a support PIN or a contract number. Saved with the account, encrypted.</p>
+          ) : (
+            fields.map((field, at) => (
+              <div className="extra-row" key={at}>
+                <label className="field">
+                  <span>Name</span>
+                  <input value={field.name} onChange={(event) => setField(at, { name: event.target.value })} placeholder="e.g. Account ID" maxLength={MAX_FIELD_NAME} disabled={!writable} />
+                </label>
+                <label className="field">
+                  <span>Value</span>
+                  <textarea value={field.value} onChange={(event) => setField(at, { value: event.target.value })} rows={2} maxLength={MAX_FIELD_VALUE} disabled={!writable} />
+                </label>
+                {writable && (
+                  <button
+                    type="button"
+                    className="btn subtle danger"
+                    aria-label={`Remove field ${field.name || at + 1}`}
+                    onClick={() => setFields(fields.filter((_, i) => i !== at))}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            ))
+          )}
+        </section>
+        {record !== undefined && (
+          <section className="extras" aria-label={`Documents for account ${index + 1}`}>
+            <div className="extras-head">
+              <h4>Documents</h4>
+              {writable && (
+                <label className={`btn subtle ${busy ? "disabled" : ""}`}>
+                  {busy === "upload" ? "Encrypting…" : "＋ Attach document"}
+                  <input
+                    className="sr-only"
+                    type="file"
+                    accept={ACCEPT_ATTRIBUTE}
+                    disabled={Boolean(busy)}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (file) documentAction("upload", () => onAttach(file));
+                    }}
+                  />
+                </label>
+              )}
+            </div>
+            {record.files.length === 0 ? (
+              <p className="modal-hint">Contracts, invoices, keys. PDF, OpenDocument, images or plain text up to 10 MB; no Word, Excel or Apple formats.</p>
+            ) : (
+              <ul className="documents">
+                {record.files.map((ref) => (
+                  <li key={ref.id}>
+                    <button type="button" className="text-button doc-name" disabled={Boolean(busy)} onClick={() => documentAction(ref.id, () => onOpenDocument(ref))}>
+                      {ref.name}
+                    </button>
+                    <span className="service-sub">
+                      {extensionOf(ref.name).toUpperCase()} · {formatSize(ref.size)} · {ref.added.slice(0, 10)}
+                      {busy === ref.id && " · decrypting…"}
+                    </span>
+                    {writable && (
+                      <button
+                        type="button"
+                        className="btn subtle danger"
+                        disabled={Boolean(busy)}
+                        onClick={() => {
+                          if (window.confirm(`Remove "${ref.name}"? It is deleted for everyone who shares this vault.`)) {
+                            documentAction(ref.id, () => onRemoveDocument(ref));
+                          }
+                        }}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
         {!readOnly && (
           <div className="modal-actions">
             <button className="btn primary" type="submit">
@@ -546,7 +732,7 @@ function AccountEditor({
           </div>
         )}
         {error && <p className="import-error">{error}</p>}
-        {!canStore && <p className="modal-hint">Passwords are not sent until the vault is unlocked and recovery is set up.</p>}
+        {!canStore && <p className="modal-hint">Passwords, extra fields and documents are not sent until the vault is unlocked and recovery is set up.</p>}
       </form>
     </article>
   );

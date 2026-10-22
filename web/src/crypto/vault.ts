@@ -211,14 +211,67 @@ export function openSealed(ciphertext: Uint8Array, publicKey: Uint8Array, privat
   return sodium.crypto_box_seal_open(ciphertext, publicKey, privateKey);
 }
 
+// An account's vault item. Format 1 held only the password; format 2 adds
+// custom fields and the documents attached to the account (docs/CRYPTO.md).
+export type CustomField = { name: string; value: string };
+export type FileRef = { id: string; name: string; type: string; size: number; key: string; added: string };
+export type AccountRecord = { password: string; fields: CustomField[]; files: FileRef[] };
+
+export const emptyRecord: AccountRecord = { password: "", fields: [], files: [] };
+
 export function passwordRecord(password: string): string {
-  return JSON.stringify({ v: 1, password });
+  return accountRecord({ ...emptyRecord, password });
+}
+
+export function accountRecord(record: AccountRecord): string {
+  return JSON.stringify({ v: 2, password: record.password, fields: record.fields, files: record.files });
+}
+
+export function readRecord(plaintext: string): AccountRecord {
+  const parsed = JSON.parse(plaintext) as { v?: number; password?: unknown; fields?: unknown; files?: unknown };
+  if ((parsed.v !== 1 && parsed.v !== 2) || typeof parsed.password !== "string") {
+    throw new Error("bad_item");
+  }
+  if (parsed.v === 1) {
+    return { ...emptyRecord, password: parsed.password };
+  }
+  const fields = Array.isArray(parsed.fields) ? parsed.fields : [];
+  const files = Array.isArray(parsed.files) ? parsed.files : [];
+  const isField = (f: unknown): f is CustomField => typeof f === "object" && f !== null && typeof (f as CustomField).name === "string" && typeof (f as CustomField).value === "string";
+  const isFile = (f: unknown): f is FileRef => {
+    const r = f as FileRef;
+    return typeof f === "object" && f !== null && typeof r.id === "string" && typeof r.name === "string" && typeof r.type === "string" && typeof r.size === "number" && typeof r.key === "string" && typeof r.added === "string";
+  };
+  if (!fields.every(isField) || !files.every(isFile)) {
+    throw new Error("bad_item");
+  }
+  return {
+    password: parsed.password,
+    fields: fields.map(({ name, value }) => ({ name, value })),
+    files: files.map(({ id, name, type, size, key, added }) => ({ id, name, type, size, key, added })),
+  };
 }
 
 export function readPassword(plaintext: string): string {
-  const parsed = JSON.parse(plaintext) as { v?: number; password?: string };
-  if (parsed.v !== 1 || typeof parsed.password !== "string") {
-    throw new Error("bad_item");
-  }
-  return parsed.password;
+  return readRecord(plaintext).password;
+}
+
+// Documents use a fresh key each, so the vault key never encrypts bulk data
+// and rotation only has to rewrap the small item that holds the file keys.
+export function fileAAD(vaultId: string, fileId: string): Uint8Array {
+  return sodium.from_string(`file|v1|${vaultId}|${fileId}`);
+}
+
+export function encryptFile(vaultId: string, fileId: string, fileKey: Uint8Array, plaintext: Uint8Array): Uint8Array {
+  const nonce = sodium.randombytes_buf(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+  const ciphertext = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, fileAAD(vaultId, fileId), null, nonce, fileKey);
+  const out = new Uint8Array(nonce.length + ciphertext.length);
+  out.set(nonce);
+  out.set(ciphertext, nonce.length);
+  return out;
+}
+
+export function decryptFile(vaultId: string, fileId: string, fileKey: Uint8Array, blob: Uint8Array): Uint8Array {
+  const size = sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
+  return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(null, blob.subarray(size), fileAAD(vaultId, fileId), blob.subarray(0, size), fileKey);
 }

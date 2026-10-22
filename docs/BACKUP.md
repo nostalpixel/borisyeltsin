@@ -82,7 +82,7 @@ An export is not a vault backup. Restoring it recreates metadata only.
 
 Keep all of these, in separate places:
 
-- Postgres dumps.
+- Postgres dumps. They include encrypted account documents (`vault_files`, up to 1 GiB per vault), so size the backup target for them.
 - Each member's personal recovery key, stored when enrollment showed it.
 - The recovery custodians' ability to open their own key: each custodian's passphrase or personal recovery key. Their boxed shares are already in the database dump.
 - The Authentik configuration, which this repository does not back up.

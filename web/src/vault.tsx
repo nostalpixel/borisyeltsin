@@ -26,6 +26,7 @@ import {
   type RecoveredVault,
   type RecoveryInfo,
 } from "./crypto/session";
+import type { AccountRecord } from "./crypto/vault";
 import type { PublicKey, VaultInfo } from "./types";
 import { StatusLine } from "./workspace";
 import { Fingerprint, PinBadge, VerifyKeyDialog } from "./verify";
@@ -35,6 +36,7 @@ export type OpenVault = {
   vault: VaultInfo;
   vaultKey: Uint8Array;
   passwords: Record<string, string>;
+  records: Record<string, AccountRecord>;
   versions: Record<string, number>;
 };
 

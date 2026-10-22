@@ -15,9 +15,13 @@ import {
   openShare,
   openVaultKey,
   passphraseKek,
+  accountRecord,
+  decryptFile,
+  encryptFile,
   passwordRecord,
   publicFromPrivate,
   readPassword,
+  readRecord,
   recoveryKeypair,
   sealRecoveryEnvelope,
   sealVaultKey,
@@ -137,5 +141,44 @@ describe("vault crypto", () => {
     const privateKey = fromB64("q/HDD5h1F1Q0Lpm1sjV6bvibyh4+Wuw1jn8JhTYemnI=");
     const sealed = fromB64("D+RBPnCigWW1/7iZRWlHjHHi97psfiGWUpv1v6QGTibYYyeEjxsmw9ddzvutX+/7+sAVoY3Gkqj30695CO5Y8OsoWiRBJm0w9UMlNwA=");
     expect(sodium.to_string(openSealed(sealed, publicKey, privateKey))).toBe("borisyeltsin challenge vector");
+  });
+});
+
+describe("account records and documents", () => {
+  it("reads format 1 items as a password with no extras", () => {
+    expect(readRecord(JSON.stringify({ v: 1, password: "old" }))).toEqual({ password: "old", fields: [], files: [] });
+  });
+
+  it("round-trips format 2 and drops unknown keys", () => {
+    const record = {
+      password: "p",
+      fields: [{ name: "Account ID", value: "A-42" }],
+      files: [{ id: "f1", name: "contract.pdf", type: "application/pdf", size: 3, key: "k", added: "2026-10-22T00:00:00Z" }],
+    };
+    const raw = JSON.parse(accountRecord(record));
+    expect(raw.v).toBe(2);
+    raw.fields[0].extra = "x";
+    expect(readRecord(JSON.stringify(raw))).toEqual(record);
+    expect(readPassword(passwordRecord("hunter2"))).toBe("hunter2");
+  });
+
+  it("refuses malformed records", () => {
+    expect(() => readRecord(JSON.stringify({ v: 3, password: "" }))).toThrow("bad_item");
+    expect(() => readRecord(JSON.stringify({ v: 2, password: "", fields: [{ name: 1, value: "" }] }))).toThrow("bad_item");
+    expect(() => readRecord(JSON.stringify({ v: 2, password: "", files: [{ id: "f" }] }))).toThrow("bad_item");
+  });
+
+  it("encrypts each document under its own key, bound to vault and file id", () => {
+    const key = sodium.randombytes_buf(32);
+    const plain = new TextEncoder().encode("%PDF-1.7 contract");
+    const sealed = encryptFile("vault", "file", key, plain);
+    expect(sealed.length).toBe(plain.length + 24 + 16);
+    expect(decryptFile("vault", "file", key, sealed)).toEqual(plain);
+    expect(() => decryptFile("vault", "other-file", key, sealed)).toThrow();
+    expect(() => decryptFile("other-vault", "file", key, sealed)).toThrow();
+    expect(() => decryptFile("vault", "file", sodium.randombytes_buf(32), sealed)).toThrow();
+    const tampered = sealed.slice();
+    tampered[30] ^= 1;
+    expect(() => decryptFile("vault", "file", key, tampered)).toThrow();
   });
 });
