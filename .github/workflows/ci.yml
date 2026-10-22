@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26.10"
@@ -53,7 +53,7 @@ jobs:
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image
         run: docker build -t boriseltsyn:ci .
       - name: Scan image
@@ -73,7 +73,7 @@ jobs:
       BOOTSTRAP_OIDC_SUBJECT: ci-subject
       BOOTSTRAP_EMAIL: ci@example.test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Compose up
         run: timeout 300 docker compose up -d --build --wait
       - name: Ready and serving the UI
