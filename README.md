@@ -1,5 +1,63 @@
 ![BorisYeltsin](docs/main_banner.png)
 
+**Every subscription your team pays for, and the logins behind them, in one self-hosted place.** BorisYeltsin tracks what renews when and what it costs, and keeps passwords, account details and contracts in a vault the server cannot read.
+
+## Features
+
+### Know what you pay and what renews next
+
+![Services list with monthly totals and renewal markers](docs/screenshots/services.png)
+
+- Services grouped by category, each with one or more accounts and a subscription: monthly, quarterly, annual or a custom interval, in any currency.
+- Monthly spend per currency at the top. Renewals in the next 7 days are marked, and alerts go out at 7, 3 and 1 days.
+- Auto-renewing subscriptions roll forward to their next date by themselves.
+- Search by service, host or login. Sort by name or by date added.
+- Export to CSV or Excel. Import a JSON backup.
+
+### Keep the whole account in one card
+
+![Account with login, password, extra fields and attached documents](docs/screenshots/account.png)
+
+Each account holds its login, password, payment card label, billing and notes. Add your own **extra fields** for anything else: customer number, support PIN, VAT ID, recovery codes. Attach **documents** such as contracts, DPAs and invoices.
+
+The password, the extra fields and the documents are encrypted in your browser before they are sent. The server stores ciphertext; it never sees the contents or even the file names.
+
+### Open formats only
+
+![A .docx file refused with a hint to export as PDF or OpenDocument](docs/screenshots/refused.png)
+
+Documents must be PDF, OpenDocument (`.odt`, `.ods`, `.odp`, `.odg`), an image (PNG, JPEG, WebP, GIF) or plain text (`.txt`, `.md`, `.csv`, `.json`, `.yaml`, `.xml`, `.pem` and similar). Word, Excel, PowerPoint, RTF, Pages, Numbers, Keynote and HEIC files are refused, and a file whose contents do not match its extension is refused too. Up to 10 MB per file and 20 per account.
+
+### Share only with keys you checked
+
+![Verifying a teammate's key fingerprint before sharing the vault](docs/screenshots/verify.png)
+
+Every person has their own key pair, unlocked by a passphrase only they know. To share the vault you compare your teammate's key fingerprint with them on a call or in person; the vault key is then sealed to that key alone. Members can read, managers can also edit, owners can also share and rotate the key.
+
+![Vault members with roles and verified keys](docs/screenshots/vault-members.png)
+
+### Recover without a back door
+
+![Organization recovery with two custodians who have confirmed their shares](docs/screenshots/recovery.png)
+
+Each person gets a personal recovery key when they enroll. On top of that, two custodians each hold half of an organization recovery key: together they can restore the vault when every key holder is gone, and neither can do it alone. New passwords cannot be saved until recovery is set up. See [docs/RECOVERY.md](docs/RECOVERY.md).
+
+### Invite people with two words
+
+![A two-word invitation key, brink-scorch, shown once](docs/screenshots/invite.png)
+
+Sign-in goes through your own Authentik with MFA; there are no local passwords and no public sign-up. An invitation is a two-word key you can read out loud. It works once, for 24 hours, and only for the one Authentik account it was made for. Roles are admin, manager, member and read-only; keys need an admin's approval, and every change lands in the audit log.
+
+### Ask your AI agent
+
+![Agents page with a read-only and a read-and-add token](docs/screenshots/agents.png)
+
+An MCP endpoint lets Claude and other agents answer "what is our monthly bill?" or "what renews next week?", and add a subscription when you tell them to. Tokens are personal, expire in 7 to 90 days, and see only the services their owner can see. Agents never reach the vault, logins or cards. See [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
+
+### Works on a phone
+
+<img src="docs/screenshots/mobile.png" alt="Services list on a phone" width="300">
+
 ## Release
 
 **Latest: [v0.4.0](https://github.com/nostalpixel/borisyeltsin/tree/v0.4.0)**, early access. Image: `ghcr.io/nostalpixel/borisyeltsin:0.4.0` (`linux/amd64`, `linux/arm64`).
@@ -14,19 +72,11 @@
 
 Early access means: one vault per organization, one server process, and no independent review of the encryption yet. Agent tokens skip the Authentik MFA check by design; they read the ledger only and never the vault. Some ledger screens are missing (payment history, payment methods, auto-renew toggle, spend totals). See [TODOS.md](TODOS.md). Set up recovery on day one: a member who loses their passphrase with no recovery in place loses vault access.
 
-# BorisYeltsin
+## How it runs
 
 Subscription ledger and team credential vault for a small organization. One Go process serves the API, the renewal scheduler, and the compiled React application. Postgres stores the ledger in the clear and the vault as ciphertext. People sign in with an external Authentik. There is no local password and no public registration.
 
 Repository: [github.com/nostalpixel/borisyeltsin](https://github.com/nostalpixel/borisyeltsin). License: MIT.
-
-## What it does
-
-- **Subscription ledger.** Services, accounts, subscriptions with billing cycles (monthly, quarterly, annual, custom), renewal dates and costs in any currency. Sort by name or date added. Monthly spend per currency, due-soon and overdue markers, renewal alerts at 7, 3 and 1 days. Auto-renewing subscriptions move to their next renewal date on their own. CSV and Excel export, backup import.
-- **Shared password vault.** Passwords, extra account fields and attached documents (PDF, OpenDocument, images, plain text) are encrypted in the browser (libsodium); the server stores ciphertext only. Sharing goes only to teammates whose key fingerprint you verified. Vault key rotation, passphrase change, and edit conflict detection.
-- **Recovery.** A personal recovery key per person, plus organization recovery: two custodians together can restore vault access when every key holder is gone ([docs/RECOVERY.md](docs/RECOVERY.md)).
-- **Team.** Sign-in through Authentik with MFA, invitations bound to one Authentik account, roles (admin, manager, member, read-only), key approval, revocation, audit log.
-- **AI agents.** An MCP endpoint lets Claude and other agents ask "what is our monthly bill?" or "what renews next week?", and add a subscription when told to. Agents never see the vault ([docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)).
 
 ## Run
 
