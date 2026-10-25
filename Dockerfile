@@ -2,7 +2,7 @@
 # The UI and Go stages run on the build machine and cross-compile, so a
 # linux/arm64 image builds without emulating npm or the Go compiler.
 
-FROM --platform=$BUILDPLATFORM node:22.15.1-alpine AS web
+FROM --platform=$BUILDPLATFORM node:26.12.1-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
