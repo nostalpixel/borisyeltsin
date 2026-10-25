@@ -38,7 +38,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha
       - name: Build for scanning
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -47,7 +47,7 @@ jobs:
       - name: Scan
         run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed borisyeltsin:scan
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
